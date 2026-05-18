@@ -20,12 +20,13 @@ Parallel execution:
 
 from __future__ import annotations
 
+import datetime
+
 from agent.state import AgentState, ToolResult
 from tools.web_search import run_web_search
 from tools.calculator import run_calculator
 from tools.wikipedia import run_wikipedia
 from tools.arxiv_search import run_arxiv_search
-import datetime
 
 
 # ── Shared helper ─────────────────────────────────────────────────────────────
@@ -76,8 +77,8 @@ def web_search_node(state: AgentState) -> dict:
     )
 
     return {
-        "tool_results": [result],
-        "tools_called": ["web_search"],
+        "tool_results": state.get("tool_results", []) + [result],
+        "tools_called": state.get("tools_called", []) + ["web_search"],
         "tools_remaining": _pop_tool(state, "web_search"),
     }
 
@@ -102,8 +103,8 @@ def wikipedia_node(state: AgentState) -> dict:
     )
 
     return {
-        "tool_results": [result],
-        "tools_called": ["wikipedia"],
+        "tool_results": state.get("tool_results", []) + [result],
+        "tools_called": state.get("tools_called", []) + ["wikipedia"],
         "tools_remaining": _pop_tool(state, "wikipedia"),
     }
 
@@ -148,8 +149,8 @@ def calculator_node(state: AgentState) -> dict:
     ]
 
     return {
-        "tool_results": [result],
-        "tools_called": ["calculator"],
+        "tool_results": state.get("tool_results", []) + [result],
+        "tools_called": state.get("tools_called", []) + ["calculator"],
         "tools_remaining": remaining,
     }
 
@@ -189,12 +190,12 @@ def arxiv_node(state: AgentState) -> dict:
     )
 
     return {
-        "tool_results": [result],
-        "tools_called": ["arxiv"],
+        "tool_results": state.get("tool_results", []) + [result],
+        "tools_called": state.get("tools_called", []) + ["arxiv"],
         "tools_remaining": _pop_tool(state, "arxiv"),
     }
-    
-    # -- SEC EDGAR Node -----------------------------------------------------------
+
+# -- SEC EDGAR Node -----------------------------------------------------------
 
 def sec_edgar_node(state: AgentState) -> dict:
     """
@@ -224,4 +225,53 @@ def sec_edgar_node(state: AgentState) -> dict:
         "tool_results": [result],
         "tools_called": ["sec_edgar"],
         "tools_remaining": _pop_tool(state, "sec_edgar"),
+    }
+
+# -- RAG Search Node ----------------------------------------------------------
+
+def rag_search_node(state: AgentState) -> dict:
+    """
+    RAG pipeline node — ingests SEC filing documents and runs semantic search.
+
+    Runs AFTER sec_edgar so it has filing URLs to fetch.
+    Adds retrieved passages to tool_results for synthesis to cite.
+
+    Two-phase:
+      1. Parse filing URLs from existing sec_edgar tool results in state
+      2. Fetch, chunk, embed, store in ChromaDB, then query semantically
+    """
+    from tools.rag_search import run_rag_pipeline
+
+    target    = state.get("company_target", state["query"])
+    fin_ctx   = state.get("financial_context", {})
+
+    # Build a targeted financial query from what the supervisor knows
+    sector    = fin_ctx.get("sector", "")
+    query     = f"revenue earnings EPS net income profit margin {target}"
+
+    # Strip ticker suffix before passing to ChromaDB filter
+    # ChromaDB stores company as "Apple Inc." but state has "Apple Inc. (AAPL)"
+    import re as _re
+    company_clean = _re.sub(r'\s*\([A-Z]{1,5}\)\s*$', '', target).strip()
+
+    output = run_rag_pipeline(
+        query_text=query,
+        tool_results=state.get("tool_results", []),
+        company=company_clean,
+    )
+
+    success = not output.startswith("[RAG Error]")
+
+    result = _build_result(
+        tool_name="rag_search",
+        query=query,
+        output=output,
+        success=success,
+        error=None if success else output,
+    )
+
+    return {
+        "tool_results": [result],
+        "tools_called": ["rag_search"],
+        "tools_remaining": _pop_tool(state, "rag_search"),
     }

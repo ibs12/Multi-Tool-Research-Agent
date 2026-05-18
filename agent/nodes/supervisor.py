@@ -65,7 +65,7 @@ TOOL_SCHEMAS = [
                     "type": "array",
                     "items": {
                         "type": "string",
-                        "enum": ["web_search", "wikipedia", "sec_edgar", "arxiv", "calculator"],
+                        "enum": ["web_search", "wikipedia", "sec_edgar", "rag_search", "arxiv", "calculator"],
                     },
                     "description": "Tools to invoke next. Keep to 1-2 per iteration.",
                 },
@@ -123,6 +123,10 @@ Rules:
 - Available research tools: web_search, wikipedia, sec_edgar, arxiv, calculator
 - Set ready_to_synthesise=true when you have enough for a complete analyst brief
 - sec_edgar provides primary source filings (10-K/10-Q) — use it for verified financials
+- rag_search fetches and semantically searches the actual filing documents — ALWAYS call it immediately after sec_edgar in the next iteration
+- rag_search is MANDATORY if sec_edgar has been called — never skip it
+- rag_search extracts real figures: revenue, EPS, gross margin, net income from 10-K/10-Q
+- Only call calculator AFTER rag_search has run so you have real figures to compute with
 """
 
 
@@ -179,8 +183,19 @@ def supervisor_node(state: AgentState) -> dict:
         }
 
     # Defensive filter: strip tools already called
+    # Exception: rag_search can only run after sec_edgar, so it may not
+    # have been called yet even if other tools have
     already_called = set(state.get("tools_called", []))
     planned_tools = [t for t in plan.get("tools_to_call", []) if t not in already_called]
+
+    # Force rag_search once after sec_edgar — but only if it has never run
+    # Use the full state tools_called list, not just this iteration
+    all_called = set(state.get("tools_called", []))
+    if ("sec_edgar" in all_called
+            and "rag_search" not in all_called
+            and "rag_search" not in planned_tools
+            and not plan.get("ready_to_synthesise")):
+        planned_tools = ["rag_search"] + [t for t in planned_tools if t != "rag_search"]
 
     # Update financial context
     fin_ctx = dict(state.get("financial_context", {}))

@@ -30,42 +30,52 @@ load_dotenv()
 MODEL = os.getenv("CLAUDE_MODEL", "claude-sonnet-4-6")
 MAX_TOKENS = 2048
 
-SYSTEM_PROMPT = """You are a senior financial analyst at a global investment bank.
+def _build_system_prompt() -> str:
+    from datetime import date
+    today = date.today().strftime("%B %d, %Y")
+    return f"""You are a senior financial analyst at a global investment bank. Today's date is {today}.
 
-You have been given raw research data collected by an AI agent across multiple sources.
-Your job is to synthesise this into a concise, professional analyst brief.
+    When writing the report, only reference events, earnings, and data 
+    that would be available as of {today}. Do not reference future quarters 
+    as if they are upcoming when they may have already occurred.
 
-Structure your report with EXACTLY these sections, using these markdown headers:
+    You have been given raw research data collected by an AI agent across multiple sources.
+    Your job is to synthesise this into a concise, professional analyst brief.
 
-## Executive Summary
-2-3 sentences. Company, sector, overall investment stance.
+    Structure your report with EXACTLY these sections, using these markdown headers:
 
-## Company Overview
-Key facts: founded, HQ, business model, market position. Source: Wikipedia.
+    ## Executive Summary
+    2-3 sentences. Company, sector, overall investment stance.
 
-## Recent Developments
-Latest news, earnings, strategic moves. Source: web search results.
+    ## Company Overview
+    Key facts: founded, HQ, business model, market position. Source: Wikipedia.
 
-## Financial Snapshot
-Any ratios or figures found (P/E, revenue growth, margins, D/E).
-If calculator results are available, include them here.
-If no figures were found, state that explicitly — do not fabricate numbers.
+    ## Recent Developments
+    Latest news, earnings, strategic moves. Source: web search results.
 
-## Risk Factors
-3-5 bullet points. Draw from news sentiment, sector context, and academic research.
+    ## Financial Snapshot
+    Primary source: use RAG_SEARCH tool results (labelled [SEC Filing]) first —
+    these are verbatim passages from 10-K/10-Q filings and are the most reliable.
+    Supplement with calculator results and web search figures where SEC data is absent.
+    Present as a table where possible: revenue, gross margin, net income, EPS, P/E, D/E.
+    If no figures were found, state that explicitly — do not fabricate numbers.
 
-## Academic & Research Context
-Cite any relevant arXiv papers found. If none, omit this section.
+    ## Risk Factors
+    3-5 bullet points. Draw from news sentiment, sector context, and academic research.
 
-## Analyst Verdict
-Bullish / Neutral / Bearish with a one-paragraph justification.
+    ## Academic & Research Context
+    Cite any relevant arXiv papers found. If none, omit this section.
 
-Rules:
-- NEVER invent financial figures. If data is missing, say so.
-- Cite your source for each claim: [Web Search], [Wikipedia], [ArXiv], [Calculator]
-- Use professional financial language throughout
-- Keep the total report under 600 words
-"""
+    ## Analyst Verdict
+    Bullish / Neutral / Bearish with a one-paragraph justification.
+
+    Rules:
+    - NEVER invent financial figures. If data is missing, say so.
+    - Cite your source for each claim: [Web Search], [Wikipedia], [ArXiv], [Calculator], [SEC Filing]
+    - RAG_SEARCH results contain verbatim SEC filing text — always cite these as [SEC Filing]
+    - Use professional financial language throughout
+    - Keep the total report under 600 words
+    """
 
 
 def synthesis_node(state: AgentState) -> dict:
@@ -80,7 +90,7 @@ def synthesis_node(state: AgentState) -> dict:
         response = client.messages.create(
             model=MODEL,
             max_tokens=MAX_TOKENS,
-            system=SYSTEM_PROMPT,
+            system=_build_system_prompt(),
             messages=[{"role": "user", "content": user_message}],
         )
         report = response.content[0].text.strip()

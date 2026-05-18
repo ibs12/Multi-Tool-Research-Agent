@@ -35,6 +35,7 @@ from agent.nodes.tools import (
     calculator_node,
     arxiv_node,
     sec_edgar_node,
+    rag_search_node,
 )
 
 load_dotenv()
@@ -46,6 +47,7 @@ TOOL_REGISTRY = {
     "calculator":  calculator_node,
     "arxiv":       arxiv_node,
     "sec_edgar":   sec_edgar_node,
+    "rag_search":  rag_search_node,
 }
 
 

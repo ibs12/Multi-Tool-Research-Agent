@@ -38,6 +38,8 @@ from typing import AsyncGenerator
 
 from dotenv import load_dotenv
 from fastapi import FastAPI, HTTPException
+from fastapi.staticfiles import StaticFiles
+from fastapi.responses import FileResponse
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
@@ -62,6 +64,21 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+
+# ── Serve frontend ────────────────────────────────────────────────────────────
+import os as _os
+_frontend_dir = _os.path.join(_os.path.dirname(_os.path.dirname(__file__)), "frontend")
+if _os.path.exists(_frontend_dir):
+    app.mount("/app", StaticFiles(directory=_frontend_dir, html=True), name="frontend")
+
+@app.get("/", include_in_schema=False)
+def root():
+    """Redirect root to the frontend."""
+    index = _os.path.join(_frontend_dir, "index.html")
+    if _os.path.exists(index):
+        return FileResponse(index)
+    return {"message": "Financial Research Agent API", "docs": "/docs", "frontend": "/app"}
 
 
 # ── Request / Response models ─────────────────────────────────────────────────
@@ -150,32 +167,38 @@ async def research_stream(req: ResearchRequest):
 
 async def _stream_generator(req: ResearchRequest) -> AsyncGenerator[str, None]:
     """
-    Async generator that runs the LangGraph graph in a thread pool
-    (graph.stream is synchronous) and yields SSE-formatted strings.
-    """
-    state = make_initial_state(req.query, max_iterations=req.max_iterations)
-    loop = asyncio.get_event_loop()
+    Streams the graph with stream_mode="values" — each event is the full
+    accumulated state after a node completes.  Consecutive snapshots are
+    diffed to identify which node just ran and what changed.
 
-    def _run_graph():
-        """Blocking call — runs in thread pool via run_in_executor."""
-        return list(graph.stream(state, stream_mode="updates"))
+    The final snapshot always contains final_report after synthesis, so no
+    second graph.invoke() call is needed.
+    """
+    loop = asyncio.get_event_loop()
+    initial_state = make_initial_state(req.query, req.max_iterations)
+
+    def _run():
+        return list(graph.stream(initial_state, stream_mode="values"))
 
     try:
-        # Run the synchronous graph in a thread so we don't block the event loop
-        events = await loop.run_in_executor(None, _run_graph)
+        snapshots = await loop.run_in_executor(None, _run)
 
-        for event in events:
-            for node_name, node_output in event.items():
-                payload = _summarise_node_output(node_name, node_output)
+        prev = initial_state
+        final_state = initial_state
+
+        for state in snapshots:
+            final_state = state
+            node_name, payload = _diff_state(prev, state)
+            if node_name:
                 yield _sse({"event": "node_complete", "node": node_name, "data": payload})
-                await asyncio.sleep(0)   # yield control back to event loop
+                await asyncio.sleep(0)
+            prev = state
 
-                # Emit the final report as its own event when synthesis completes
-                if node_name == "synthesis" and node_output.get("final_report"):
-                    yield _sse({
-                        "event": "report",
-                        "data": node_output["final_report"],
-                    })
+        report = final_state.get("final_report", "")
+        if report:
+            yield _sse({"event": "report", "data": report})
+        else:
+            yield _sse({"event": "error", "data": "No report generated — check server logs."})
 
         yield _sse({"event": "done"})
 
@@ -184,31 +207,56 @@ async def _stream_generator(req: ResearchRequest) -> AsyncGenerator[str, None]:
         yield _sse({"event": "done"})
 
 
-def _summarise_node_output(node_name: str, output: dict) -> dict:
+def _diff_state(prev: dict, curr: dict) -> tuple[str | None, dict]:
     """
-    Extracts the most useful fields from a node's output for the SSE payload.
-    Avoids sending raw tool output (can be 2000+ chars) over the wire.
+    Identify which node just ran by diffing two consecutive full state snapshots.
+
+    Detection order (first match wins):
+      1. final_report became non-empty  → synthesis
+      2. iteration_count increased      → supervisor
+      3. tool_results grew              → tool node (or dispatcher if many at once)
     """
-    summary: dict = {"node": node_name}
+    # Synthesis: final_report was written
+    curr_report = curr.get("final_report", "")
+    if curr_report and not prev.get("final_report", ""):
+        return "synthesis", {"complete": True}
 
-    if node_name == "supervisor":
-        summary["plan"] = output.get("current_plan", "")[:200]
-        summary["tools_queued"] = output.get("tools_remaining", [])
-        summary["iteration"] = output.get("iteration_count", 0)
-        summary["company_target"] = output.get("company_target", "")
+    # Supervisor: increments iteration_count each run
+    curr_iters = curr.get("iteration_count", 0)
+    if curr_iters > prev.get("iteration_count", 0):
+        return "supervisor", {
+            "plan": curr.get("current_plan", "")[:200],
+            "tools_queued": curr.get("tools_remaining", []),
+            "iteration": curr_iters,
+            "company_target": curr.get("company_target", ""),
+        }
 
-    elif node_name in ("web_search", "wikipedia", "calculator", "arxiv"):
-        results = output.get("tool_results", [])
-        if results:
-            last = results[-1]
-            summary["tool"] = last["tool_name"]
-            summary["success"] = last["success"]
-            summary["preview"] = last["output"][:300] if last["success"] else last.get("error", "")
+    # Tool node(s): tool_results list grew
+    prev_results: list = prev.get("tool_results") or []
+    curr_results: list = curr.get("tool_results") or []
+    new_results = curr_results[len(prev_results):]
+    if new_results:
+        # Multiple new results in one step → dispatcher ran tools in parallel
+        if len(new_results) > 1:
+            return "dispatcher", {
+                "tools": [r["tool_name"] for r in new_results],
+                "tool_results": [
+                    {
+                        "tool": r["tool_name"],
+                        "success": r["success"],
+                        "preview": r["output"][:200] if r["success"] else r.get("error", ""),
+                    }
+                    for r in new_results
+                ],
+            }
+        r = new_results[0]
+        return r["tool_name"], {
+            "tool": r["tool_name"],
+            "success": r["success"],
+            "preview": r["output"][:300] if r["success"] else r.get("error", ""),
+        }
 
-    elif node_name == "synthesis":
-        summary["complete"] = True
-
-    return summary
+    return None, {}
 
 
 def _sse(data: dict) -> str:

@@ -25,3 +25,13 @@ build/
 .pytest_cache/
 .coverage
 htmlcov/
+
+# ChromaDB local vector store
+.chroma_db/
+
+# Sentence transformer model cache
+.cache/
+sentence_transformers/
+
+# LangGraph checkpoints (if you add persistence later)
+.langgraph_cache/
