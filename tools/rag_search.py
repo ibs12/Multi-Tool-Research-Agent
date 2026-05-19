@@ -19,7 +19,9 @@ from __future__ import annotations
 
 import re
 from rag.sec_fetcher import fetch_and_chunk
-from rag.chroma_store import ingest_chunks, query, format_rag_results, collection_stats
+# Switch between ChromaDB (local dev) and pgvector (production)
+# Change this one import to migrate between backends
+from rag.pgvector_store import ingest_chunks, query, format_rag_results
 
 
 # -- Ingest phase -------------------------------------------------------------
@@ -152,19 +154,11 @@ def run_rag_pipeline(query_text: str, tool_results: list[dict], company: str = "
     """
     Full RAG pipeline: ingest any new SEC filings found in tool_results,
     then run a semantic query. Called by the LangGraph rag node.
-
-    Ingest is skipped when ChromaDB already holds chunks — this prevents a
-    redundant network fetch on every agent run and ensures the query always
-    fires against existing data even when rag_search runs in the same
-    dispatcher batch as sec_edgar (before sec_edgar results reach state).
     """
-    stats = collection_stats()
-    if stats.get("total_chunks", 0) > 0:
-        ingest_status = (
-            f"RAG INGEST: Skipped — {stats['total_chunks']} chunks already indexed."
-        )
-    else:
-        ingest_status = ingest_filings_from_state(tool_results)
+    # Phase 1: ingest
+    ingest_status = ingest_filings_from_state(tool_results)
 
+    # Phase 2: query
     query_result = run_rag_query(query_text, company or None)
+
     return f"{ingest_status}\n\n{query_result}"
