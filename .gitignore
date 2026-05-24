@@ -33,5 +33,9 @@ htmlcov/
 .cache/
 sentence_transformers/
 
-# LangGraph checkpoints (if you add persistence later)
+# Docker runtime
+.docker/
+docker-compose.override.yml
+
+# LangGraph checkpoints
 .langgraph_cache/
