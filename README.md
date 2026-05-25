@@ -2,8 +2,6 @@
 
 > An agentic AI system that autonomously researches any publicly traded company or market sector and generates a structured analyst brief — powered by Claude + LangGraph + pgvector.
 
-Built as a demonstration of production-grade GenAI engineering for the Citi Junior GenAI Developer programme.
-
 ---
 
 ## Demo
