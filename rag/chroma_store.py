@@ -234,10 +234,16 @@ def format_rag_results(results: list[dict], query_text: str) -> str:
 
 
 def collection_stats() -> dict:
-    """Return stats about the current vector store state."""
+    """Return stats about the current vector store state, including per-company counts."""
     try:
         collection = _get_collection()
         count = collection.count()
-        return {"total_chunks": count, "collection": COLLECTION_NAME}
+        companies: dict[str, int] = {}
+        if count > 0:
+            all_meta = collection.get(include=["metadatas"])
+            for meta in all_meta.get("metadatas") or []:
+                company = meta.get("company", "unknown")
+                companies[company] = companies.get(company, 0) + 1
+        return {"total_chunks": count, "collection": COLLECTION_NAME, "companies": companies}
     except Exception as e:
-        return {"error": str(e)}
+        return {"error": str(e), "total_chunks": 0, "companies": {}}

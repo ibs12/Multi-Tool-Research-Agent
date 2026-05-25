@@ -115,18 +115,26 @@ You have two tools available:
 1. plan_research — specify which tools to run next
 2. calculate_ratio — compute a financial ratio from numbers you've already found
 
+Available research tools: web_search, wikipedia, sec_edgar, rag_search, arxiv, calculator
+
+Tool guide:
+- web_search    — recent news, earnings, analyst price targets, sentiment
+- wikipedia     — stable company background, business model, history
+- sec_edgar     — primary source 10-K/10-Q/8-K filing metadata and URLs
+- rag_search    — semantic search over the CONTENT of those filings (real figures)
+- arxiv         — academic papers on sector risk or quantitative finance
+- calculator    — compute financial ratios once you have real numbers
+
 Rules:
 - Always call plan_research to specify your next steps
 - Call calculate_ratio ONLY when you have extracted actual numbers from tool results
 - Never repeat a tool already in tools_called
 - On the first iteration, always include web_search and wikipedia
-- Available research tools: web_search, wikipedia, sec_edgar, arxiv, calculator
-- Set ready_to_synthesise=true when you have enough for a complete analyst brief
-- sec_edgar provides primary source filings (10-K/10-Q) — use it for verified financials
-- rag_search fetches and semantically searches the actual filing documents — ALWAYS call it immediately after sec_edgar in the next iteration
-- rag_search is MANDATORY if sec_edgar has been called — never skip it
+- NEVER put sec_edgar and rag_search in the same tools_to_call list — sec_edgar must complete first so its filing URLs are available to rag_search in the following iteration
+- rag_search is MANDATORY after sec_edgar — always queue it in the iteration immediately after sec_edgar runs
 - rag_search extracts real figures: revenue, EPS, gross margin, net income from 10-K/10-Q
 - Only call calculator AFTER rag_search has run so you have real figures to compute with
+- Set ready_to_synthesise=true when you have enough for a complete analyst brief
 """
 
 
@@ -140,13 +148,18 @@ def supervisor_node(state: AgentState) -> dict:
     client = anthropic.Anthropic(api_key=os.environ["ANTHROPIC_API_KEY"])
     user_message = _build_user_message(state)
 
+    # Cache the system prompt and tool schemas — both are static across every
+    # supervisor call in a run, so repeated calls within the 5-min TTL are cheap.
+    cached_tools = [t.copy() for t in TOOL_SCHEMAS]
+    cached_tools[-1] = {**cached_tools[-1], "cache_control": {"type": "ephemeral"}}
+
     try:
         response = client.messages.create(
             model=MODEL,
             max_tokens=MAX_TOKENS,
-            system=SYSTEM_PROMPT,
-            tools=TOOL_SCHEMAS,
-            tool_choice={"type": "any"},   # Claude must call at least one tool
+            system=[{"type": "text", "text": SYSTEM_PROMPT, "cache_control": {"type": "ephemeral"}}],
+            tools=cached_tools,
+            tool_choice={"type": "any"},
             messages=[{"role": "user", "content": user_message}],
         )
     except anthropic.APIError as e:

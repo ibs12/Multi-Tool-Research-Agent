@@ -642,6 +642,16 @@
     .verdict-bullish  { color: var(--green) !important; font-weight: 700; }
     .verdict-bearish  { color: var(--red) !important; font-weight: 700; }
     .verdict-neutral  { color: var(--accent) !important; font-weight: 700; }
+
+    /* ── Streaming pre-render ──────────────────────────────────────── */
+    .markdown-body.streaming {
+      font-family: var(--mono);
+      font-size: 12px;
+      line-height: 1.7;
+      color: var(--text-secondary);
+      white-space: pre-wrap;
+      word-break: break-word;
+    }
   </style>
 </head>
 <body>
@@ -770,6 +780,7 @@
 
   // ── State ───────────────────────────────────────────────────────────
   let currentReport = '';
+  let reportBuffer = '';
   let startTime = null;
   let timerInterval = null;
 
@@ -893,6 +904,7 @@
     const maxIter = parseInt(document.getElementById('iterSelect').value);
     setLoading(true);
     currentReport = '';
+    reportBuffer = '';
 
     log('system', '▶', `Starting research: "${query.substring(0, 60)}..."`);
 
@@ -981,7 +993,29 @@
             }
           }
 
+          else if (event === 'report_chunk') {
+            if (!reportBuffer) {
+              // First token — transition from loading bars to streaming text view
+              document.getElementById('loadingState').classList.remove('visible');
+              document.getElementById('emptyState').style.display = 'none';
+              const content = document.getElementById('reportContent');
+              content.classList.add('streaming');
+              content.style.display = 'block';
+            }
+            reportBuffer += data;
+            const content = document.getElementById('reportContent');
+            content.textContent = reportBuffer + '▊';
+            // Auto-scroll as tokens arrive
+            const body = document.getElementById('reportBody');
+            body.scrollTop = body.scrollHeight;
+          }
+
           else if (event === 'report') {
+            // Final render: swap raw text for parsed markdown
+            const content = document.getElementById('reportContent');
+            content.classList.remove('streaming');
+            reportBuffer = '';
+
             const elapsed = ((Date.now() - startTime) / 1000).toFixed(1);
             showReport(data, {
               company: companyTarget || query,

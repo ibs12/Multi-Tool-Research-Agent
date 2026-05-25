@@ -15,8 +15,17 @@ uvicorn[standard]>=0.30.0
 sse-starlette>=2.1.0       # streaming SSE responses
 pydantic>=2.8.0
 
+# RAG / vector store
+chromadb>=0.5.0
+sentence-transformers>=3.0.0   # all-MiniLM-L6-v2 embeddings
+psycopg2-binary>=2.9.0         # pgvector backend
+
 # Utilities
 python-dotenv>=1.0.0
 httpx>=0.27.0
 tenacity>=9.0.0            # retry logic
 rich>=13.0.0               # pretty CLI output
+diskcache>=5.6.0           # CLI result caching (--cache flag)
+
+# Dev / test
+pytest>=9.0.0

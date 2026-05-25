@@ -22,7 +22,7 @@ from __future__ import annotations
 import re
 import time
 import urllib.request
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from functools import lru_cache
 
 EDGAR_HEADERS = {
@@ -97,7 +97,7 @@ def fetch_and_chunk(
             )
             for i, chunk_text in enumerate(chunks)
         ]
-    except Exception as e:
+    except Exception:
         return []
 
 
@@ -122,13 +122,13 @@ def _fetch_html(url: str) -> str:
 
 def _strip_html(html: str) -> str:
     """Remove HTML tags and normalise whitespace."""
+    import html as _html
     # Remove script and style blocks entirely
     text = re.sub(r"<(script|style)[^>]*>.*?</\1>", "", html, flags=re.DOTALL | re.IGNORECASE)
     # Remove all remaining tags
     text = re.sub(r"<[^>]+>", " ", text)
-    # Decode common HTML entities
-    text = text.replace("&amp;", "&").replace("&lt;", "<").replace("&gt;", ">")
-    text = text.replace("&nbsp;", " ").replace("&#160;", " ")
+    # Decode all HTML entities (&#8217; → ', &amp; → &, etc.)
+    text = _html.unescape(text)
     # Collapse whitespace
     text = re.sub(r"\s{3,}", "\n\n", text)
     text = re.sub(r" {2,}", " ", text)

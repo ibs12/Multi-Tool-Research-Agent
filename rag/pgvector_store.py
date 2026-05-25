@@ -162,41 +162,51 @@ def query(
     top_k:          int        = TOP_K,
 ) -> list[dict]:
     """
-    Semantic search using pgvector cosine distance operator (<=>) .
-    Strict company filter — no cross-company result contamination.
+    Semantic search using pgvector cosine distance operator (<=>).
+
+    Company filter uses the first significant word of the name, matched
+    case-insensitively against stored names (handles 'Citigroup Inc.' vs
+    'CITIGROUP INC').  If no rows pass the filter, falls back to unfiltered
+    cosine search — safe because each session indexes one company.
     """
+    import re as _re
+
     _ensure_schema()
 
     query_embedding = _embed([query_text])[0]
     embedding_str   = _fmt_embedding(query_embedding)
 
-    if company_filter:
-        sql = f"""
-            SELECT content, company, form_type, filed_at, section, source_url,
-                   1 - (embedding <=> %s::vector) AS similarity
-            FROM {TABLE_NAME}
-            WHERE company = %s
-            ORDER BY embedding <=> %s::vector
-            LIMIT %s
-        """
-        params = (embedding_str, company_filter, embedding_str, top_k)
-    else:
-        sql = f"""
-            SELECT content, company, form_type, filed_at, section, source_url,
-                   1 - (embedding <=> %s::vector) AS similarity
-            FROM {TABLE_NAME}
-            ORDER BY embedding <=> %s::vector
-            LIMIT %s
-        """
-        params = (embedding_str, embedding_str, top_k)
+    base = f"""
+        SELECT content, company, form_type, filed_at, section, source_url,
+               1 - (embedding <=> %s::vector) AS similarity
+        FROM {TABLE_NAME}
+    """
 
-    try:
-        conn = _get_conn()
-        with conn.cursor() as cur:
-            cur.execute(sql, params)
-            rows = cur.fetchall()
-    except Exception as e:
-        return []
+    def _run(sql, params):
+        try:
+            conn = _get_conn()
+            with conn.cursor() as cur:
+                cur.execute(sql, params)
+                return cur.fetchall()
+        except Exception:
+            return []
+
+    rows = []
+    if company_filter:
+        # Normalise to first significant word: "Citigroup Inc. (C)" → "citigroup"
+        first_word = _re.sub(r'[^a-z]', '', company_filter.lower().split()[0])
+        if first_word:
+            rows = _run(
+                base + " WHERE LOWER(company) LIKE %s ORDER BY embedding <=> %s::vector LIMIT %s",
+                (embedding_str, f'%{first_word}%', embedding_str, top_k),
+            )
+
+    if not rows:
+        # Fallback: unfiltered similarity search (correct company still ranks highest)
+        rows = _run(
+            base + " ORDER BY embedding <=> %s::vector LIMIT %s",
+            (embedding_str, embedding_str, top_k),
+        )
 
     results = []
     for row in rows:

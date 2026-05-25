@@ -5,23 +5,21 @@ RAG tool that ingests SEC filing documents and answers semantic queries.
 
 Two-phase operation:
   Phase 1 (ingest): Given a list of filing URLs from sec_edgar tool,
-    fetch each document, chunk it, embed it, and store in ChromaDB.
+    fetch each document, chunk it, embed it, and store in the vector DB.
 
-  Phase 2 (query): Given a natural language query, search the vector
-    store for relevant passages and return them as cited text.
+  Phase 2 (query): Semantic search over stored chunks, returning cited
+    passages for synthesis to include as [SEC Filing] sources.
 
-The agent calls this tool AFTER sec_edgar has run — it uses the filing
-URLs already in the agent state to populate the vector store, then
-answers specific financial questions against the actual document text.
+Backend is selected automatically:
+  PGVECTOR_URL set  →  PostgreSQL + pgvector
+  PGVECTOR_URL unset →  ChromaDB (local dev)
 """
 
 from __future__ import annotations
 
 import re
 from rag.sec_fetcher import fetch_and_chunk
-# Switch between ChromaDB (local dev) and pgvector (production)
-# Change this one import to migrate between backends
-from rag.pgvector_store import ingest_chunks, query, format_rag_results
+from rag.rag_backend import ingest_chunks, query, format_rag_results, collection_stats
 
 
 # -- Ingest phase -------------------------------------------------------------
@@ -152,13 +150,39 @@ def run_rag_query(query_text: str, company: str | None = None) -> str:
 
 def run_rag_pipeline(query_text: str, tool_results: list[dict], company: str = "") -> str:
     """
-    Full RAG pipeline: ingest any new SEC filings found in tool_results,
-    then run a semantic query. Called by the LangGraph rag node.
+    Full RAG pipeline: ingest SEC filings if needed, then semantic query.
+
+    Ingest is skipped when the vector store already holds chunks for this
+    company — avoids redundant network fetches and works correctly when
+    rag_search runs in the same dispatcher batch as sec_edgar (both see
+    the same state snapshot, so sec_edgar results aren't in tool_results yet).
+    A fresh ingest is triggered when querying a company not yet indexed.
     """
-    # Phase 1: ingest
-    ingest_status = ingest_filings_from_state(tool_results)
+    import re as _re
 
-    # Phase 2: query
+    stats = collection_stats()
+    existing = stats.get("companies", {})
+    company_key = company.strip()
+
+    # Compare by first significant word only (handles "CITIGROUP INC" vs "Citigroup Inc.")
+    def _first_word(s: str) -> str:
+        return _re.sub(r'[^a-z]', '', s.lower().split()[0]) if s.strip() else ''
+
+    target_word = _first_word(company_key)
+    already_indexed = any(
+        target_word and target_word in _re.sub(r'[^a-z]', '', stored.lower())
+        for stored in existing
+    ) if target_word else stats.get("total_chunks", 0) > 0
+
+    if already_indexed:
+        chunk_count = existing.get(company_key) or next(
+            (v for k, v in existing.items() if k.lower() == company_key.lower()), 0
+        )
+        ingest_status = (
+            f"RAG INGEST: Skipped — {chunk_count} chunks for '{company_key}' already indexed."
+        )
+    else:
+        ingest_status = ingest_filings_from_state(tool_results)
+
     query_result = run_rag_query(query_text, company or None)
-
     return f"{ingest_status}\n\n{query_result}"
