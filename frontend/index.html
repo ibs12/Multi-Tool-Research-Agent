@@ -652,6 +652,95 @@
       white-space: pre-wrap;
       word-break: break-word;
     }
+
+    /* ── Mobile responsive ─────────────────────────────────────────── */
+    @media (max-width: 768px) {
+      /* Stack panels vertically */
+      .layout {
+        grid-template-columns: 1fr;
+        grid-template-rows: auto 1fr;
+        height: auto;
+        min-height: calc(100vh - 48px);
+      }
+
+      /* Left panel becomes a top bar */
+      .left-panel {
+        border-right: none;
+        border-bottom: 1px solid var(--border);
+        overflow: visible;
+      }
+
+      /* Activity log: fixed max-height so it doesn't consume the screen */
+      .activity-section {
+        max-height: 200px;
+      }
+
+      /* Quick queries scroll horizontally — saves vertical space */
+      .quick-grid {
+        flex-direction: row;
+        overflow-x: auto;
+        padding-bottom: 4px;
+        -webkit-overflow-scrolling: touch;
+        scrollbar-width: none;
+      }
+      .quick-grid::-webkit-scrollbar { display: none; }
+
+      .quick-btn {
+        flex-shrink: 0;
+        white-space: nowrap;
+      }
+
+      /* Topbar */
+      .topbar { padding: 0 16px; }
+      .brand-name { font-size: 11px; letter-spacing: 0.02em; }
+      .topbar-time { display: none; }
+
+      /* Query section */
+      .query-section { padding: 14px 16px; }
+      .quick-section { padding: 12px 16px; }
+      .panel-header  { padding: 14px 16px 12px; }
+      .activity-section { padding: 12px 16px; }
+
+      /* 16px prevents iOS Safari from auto-zooming on focus */
+      .query-input  { font-size: 16px; min-height: 72px; }
+      .iter-select  { font-size: 16px; padding: 6px 8px; }
+
+      /* Bigger touch targets */
+      .run-btn      { padding: 12px 20px; min-height: 44px; }
+      .quick-btn    { padding: 10px 14px; min-height: 40px; }
+
+      /* Right panel */
+      .right-panel  { min-height: 60vh; }
+
+      /* Report header wraps on narrow screens */
+      .report-header {
+        padding: 12px 16px;
+        flex-wrap: wrap;
+        gap: 8px;
+      }
+      .report-company { font-size: 15px; }
+      .report-badges  { flex-wrap: wrap; }
+      .copy-btn       { padding: 8px 12px; min-height: 36px; }
+
+      /* Report body */
+      .report-body { padding: 20px 16px; }
+
+      /* Tables scroll horizontally instead of overflowing */
+      .markdown-body table {
+        display: block;
+        overflow-x: auto;
+        -webkit-overflow-scrolling: touch;
+      }
+
+      /* Empty / loading states: natural height on mobile */
+      .empty-state  { min-height: 40vh; height: auto; }
+      .loading-state { min-height: 40vh; height: auto; }
+    }
+
+    @media (max-width: 400px) {
+      .brand-badge { display: none; }
+      .report-badges { display: none; }
+    }
   </style>
 </head>
 <body>
@@ -752,7 +841,7 @@
       <div class="empty-state" id="emptyState">
         <div class="empty-icon">⬡</div>
         <div class="empty-title">No Report Generated</div>
-        <div class="empty-sub">Enter a company name or sector query in the terminal on the left to generate a research brief.</div>
+        <div class="empty-sub">Enter a company name or sector query above to generate a research brief.</div>
       </div>
 
       <!-- Loading state -->
@@ -1001,6 +1090,10 @@
               const content = document.getElementById('reportContent');
               content.classList.add('streaming');
               content.style.display = 'block';
+              // On mobile, scroll past the left panel so the report is visible
+              if (window.innerWidth <= 768) {
+                document.getElementById('reportBody').scrollIntoView({ behavior: 'smooth' });
+              }
             }
             reportBuffer += data;
             const content = document.getElementById('reportContent');
