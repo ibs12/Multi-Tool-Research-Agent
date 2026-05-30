@@ -32,12 +32,15 @@
 
     *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
 
+    html { overflow-x: hidden; }
+
     body {
       font-family: var(--sans);
       background: var(--bg);
       color: var(--text-primary);
       min-height: 100vh;
       overflow-x: hidden;
+      max-width: 100vw;
     }
 
     /* ── Scanline overlay ──────────────────────────────────────────── */
@@ -127,6 +130,9 @@
       grid-template-columns: 340px 1fr;
       height: calc(100vh - 48px);
     }
+
+    /* Prevent grid children from blowing past their column */
+    .layout > * { min-width: 0; }
 
     /* ── Left panel ────────────────────────────────────────────────── */
     .left-panel {
@@ -705,9 +711,25 @@
       .query-input  { font-size: 16px; min-height: 72px; }
       .iter-select  { font-size: 16px; padding: 6px 8px; }
 
-      /* Bigger touch targets */
-      .run-btn      { padding: 12px 20px; min-height: 44px; }
-      .quick-btn    { padding: 10px 14px; min-height: 40px; }
+      /* Query footer: iterations on top row, Run button full-width below */
+      .query-footer {
+        flex-direction: column;
+        align-items: stretch;
+        gap: 10px;
+      }
+
+      .iter-control { justify-content: space-between; }
+
+      /* Run button spans full width — easy to tap */
+      .run-btn {
+        width: 100%;
+        justify-content: center;
+        padding: 14px 20px;
+        min-height: 48px;
+        font-size: 13px;
+      }
+
+      .quick-btn { padding: 10px 14px; min-height: 40px; }
 
       /* Right panel */
       .right-panel  { min-height: 60vh; }
