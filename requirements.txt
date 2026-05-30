@@ -16,7 +16,8 @@ sse-starlette>=2.1.0       # streaming SSE responses
 pydantic>=2.8.0
 
 # RAG / vector store
-chromadb>=0.5.0
+--extra-index-url https://download.pytorch.org/whl/cpu
+torch>=2.0.0                   # CPU-only wheel (~500MB smaller than CUDA)
 sentence-transformers>=3.0.0   # all-MiniLM-L6-v2 embeddings
 psycopg2-binary>=2.9.0         # pgvector backend
 

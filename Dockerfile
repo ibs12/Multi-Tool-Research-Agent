@@ -30,11 +30,6 @@ ENV PATH=/root/.local/bin:$PATH
 # Copy application code
 COPY . .
 
-# Pre-download the sentence-transformer model at build time
-# so the first agent run doesn't need to download it
-RUN python -c "from sentence_transformers import SentenceTransformer; SentenceTransformer('all-MiniLM-L6-v2')" \
-    || echo "Model pre-download skipped"
-
 # Expose API port
 EXPOSE 8000
 
