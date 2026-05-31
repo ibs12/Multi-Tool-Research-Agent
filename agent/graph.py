@@ -75,7 +75,7 @@ def async_tool_dispatcher(state: AgentState) -> dict:
         return {}
 
     async def _run_all():
-        executor = ThreadPoolExecutor(max_workers=len(valid_tools))
+        executor = ThreadPoolExecutor(max_workers=4)
         try:
             tasks = [
                 asyncio.get_event_loop().run_in_executor(

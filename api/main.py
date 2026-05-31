@@ -16,10 +16,11 @@ SSE event types:
   error           — something went wrong   {"event","data": "<message>"}
   done            — stream closed          {"event"}
 
-Synthesis streaming architecture:
-  stream_synthesis() is a sync generator (runs in a ThreadPoolExecutor).
-  An asyncio.Queue bridges the generator thread to the async SSE generator
-  so tokens arrive at the browser in real time rather than all at once.
+Concurrency model:
+  _semaphore(3) limits concurrent streaming requests.  Each request runs the
+  research graph in a dedicated daemon thread bridged to the async generator
+  via asyncio.Queue (call_soon_threadsafe for thread → loop hand-off).
+  Synthesis tokens use a thread_queue.Queue bridge with run_in_executor.
 
 Interview talking point:
   SSE is preferred over WebSockets here because communication is strictly
@@ -66,6 +67,10 @@ app.add_middleware(
 _frontend_dir = _os.path.join(_os.path.dirname(_os.path.dirname(__file__)), "frontend")
 if _os.path.exists(_frontend_dir):
     app.mount("/app", StaticFiles(directory=_frontend_dir, html=True), name="frontend")
+
+# Limit concurrent streaming requests to avoid OOM on Railway's 512MB plan.
+# asyncio.Semaphore is safe to create at module level in Python 3.10+.
+_semaphore = asyncio.Semaphore(3)
 
 
 @app.get("/", include_in_schema=False)
@@ -134,10 +139,17 @@ async def research_stream(req: ResearchRequest):
     Stream agent progress as Server-Sent Events.
 
     Phase 1 — graph loop: emits node_complete events for each supervisor
-               and dispatcher hop (full state diffed to identify the node).
+               and dispatcher hop as they happen (not buffered).
     Phase 2 — synthesis:  emits report_chunk for every token Claude streams,
                then report with the complete markdown when done.
+
+    Returns 503 immediately if all 3 concurrent slots are occupied.
     """
+    if _semaphore.locked():
+        raise HTTPException(
+            status_code=503,
+            detail="Agent at capacity — please try again shortly.",
+        )
     return StreamingResponse(
         _stream_generator(req),
         media_type="text/event-stream",
@@ -146,69 +158,85 @@ async def research_stream(req: ResearchRequest):
 
 
 async def _stream_generator(req: ResearchRequest) -> AsyncGenerator[str, None]:
-    loop = asyncio.get_event_loop()
-    initial_state = make_initial_state(req.query, req.max_iterations)
+    async with _semaphore:
+        loop = asyncio.get_running_loop()
+        initial_state = make_initial_state(req.query, req.max_iterations)
 
-    # ── Phase 1: stream the research loop ────────────────────────────────────
-    def _run_graph():
-        return list(graph.stream(initial_state, stream_mode="values"))
+        # ── Phase 1: stream the research graph in real time ─────────────────
+        # graph.stream() is a blocking sync generator.  We run it in a daemon
+        # thread and hand each snapshot back to the event loop via
+        # call_soon_threadsafe, which is the only thread-safe asyncio bridge.
+        snap_q: asyncio.Queue = asyncio.Queue()
 
-    try:
-        snapshots = await loop.run_in_executor(None, _run_graph)
-    except Exception as e:
-        yield _sse({"event": "error", "data": str(e)})
+        def _run_graph():
+            try:
+                for snap in graph.stream(initial_state, stream_mode="values"):
+                    loop.call_soon_threadsafe(snap_q.put_nowait, snap)
+            except Exception as exc:
+                loop.call_soon_threadsafe(snap_q.put_nowait, exc)
+            finally:
+                loop.call_soon_threadsafe(snap_q.put_nowait, None)  # sentinel
+
+        threading.Thread(target=_run_graph, daemon=True).start()
+
+        prev        = initial_state
+        final_state = initial_state
+
+        while True:
+            item = await snap_q.get()
+            if item is None:
+                break
+            if isinstance(item, Exception):
+                yield _sse({"event": "error", "data": str(item)})
+                yield _sse({"event": "done"})
+                return
+            final_state = item
+            node_name, payload = _diff_state(prev, item)
+            if node_name:
+                yield _sse({"event": "node_complete", "node": node_name, "data": payload})
+                await asyncio.sleep(0)
+            prev = item
+
+        # ── Phase 2: stream synthesis token-by-token ─────────────────────────
+        # stream_synthesis() is a blocking generator — bridge to async via
+        # a plain thread_queue.Queue + run_in_executor so q.get() doesn't
+        # stall the event loop.
+        yield _sse({"event": "node_complete", "node": "synthesis", "data": {"streaming": True}})
+        await asyncio.sleep(0)
+
+        synth_q: thread_queue.Queue = thread_queue.Queue()
+
+        def _producer():
+            try:
+                for event_type, data in stream_synthesis(final_state):
+                    synth_q.put((event_type, data))
+            except Exception as exc:
+                synth_q.put(("error", str(exc)))
+            finally:
+                synth_q.put(None)
+
+        threading.Thread(target=_producer, daemon=True).start()
+
+        full_report = ""
+        while True:
+            item = await loop.run_in_executor(None, synth_q.get)
+            if item is None:
+                break
+            event_type, data = item
+            if event_type == "chunk":
+                yield _sse({"event": "report_chunk", "data": data})
+                await asyncio.sleep(0)
+            elif event_type == "done":
+                full_report = data
+            elif event_type == "error":
+                yield _sse({"event": "error", "data": data})
+
+        if full_report:
+            yield _sse({"event": "report", "data": full_report})
+        else:
+            yield _sse({"event": "error", "data": "No report generated — check server logs."})
+
         yield _sse({"event": "done"})
-        return
-
-    prev       = initial_state
-    final_state = initial_state
-
-    for state in snapshots:
-        final_state = state
-        node_name, payload = _diff_state(prev, state)
-        if node_name:
-            yield _sse({"event": "node_complete", "node": node_name, "data": payload})
-            await asyncio.sleep(0)
-        prev = state
-
-    # ── Phase 2: stream synthesis token-by-token ─────────────────────────────
-    # stream_synthesis() is a blocking generator — bridge to async via Queue.
-    yield _sse({"event": "node_complete", "node": "synthesis", "data": {"streaming": True}})
-    await asyncio.sleep(0)
-
-    q: thread_queue.Queue = thread_queue.Queue()
-
-    def _producer():
-        try:
-            for event_type, data in stream_synthesis(final_state):
-                q.put((event_type, data))
-        except Exception as exc:
-            q.put(("error", str(exc)))
-        finally:
-            q.put(None)  # sentinel
-
-    threading.Thread(target=_producer, daemon=True).start()
-
-    full_report = ""
-    while True:
-        item = await loop.run_in_executor(None, q.get)
-        if item is None:
-            break
-        event_type, data = item
-        if event_type == "chunk":
-            yield _sse({"event": "report_chunk", "data": data})
-            await asyncio.sleep(0)
-        elif event_type == "done":
-            full_report = data
-        elif event_type == "error":
-            yield _sse({"event": "error", "data": data})
-
-    if full_report:
-        yield _sse({"event": "report", "data": full_report})
-    else:
-        yield _sse({"event": "error", "data": "No report generated — check server logs."})
-
-    yield _sse({"event": "done"})
 
 
 # ── State diffing ─────────────────────────────────────────────────────────────
