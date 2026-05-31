@@ -734,6 +734,49 @@
       letter-spacing: 0.02em;
     }
 
+    /* ── Chart metric tabs ─────────────────────────────────────────── */
+    .chart-tabs {
+      display: flex;
+      gap: 0;
+      border-bottom: 1px solid var(--border);
+      margin-top: 4px;
+      margin-bottom: 0;
+    }
+
+    .chart-tab {
+      font-family: var(--mono);
+      font-size: 9px;
+      font-weight: 600;
+      letter-spacing: 0.12em;
+      text-transform: uppercase;
+      padding: 7px 16px 8px;
+      border: none;
+      border-bottom: 2px solid transparent;
+      background: none;
+      cursor: pointer;
+      color: var(--text-secondary);
+      transition: color 0.15s, border-color 0.15s;
+      margin-bottom: -1px;
+    }
+
+    .chart-tab.active {
+      color: var(--accent);
+      border-bottom-color: var(--accent);
+    }
+
+    .chart-tab:hover:not(.active) { color: var(--text-primary); }
+
+    /* ── Table source footnote ─────────────────────────────────────── */
+    .table-footnote {
+      font-family: var(--mono);
+      font-size: 8px;
+      color: var(--text-dim);
+      margin-top: 6px;
+      margin-bottom: 20px;
+      line-height: 1.6;
+      letter-spacing: 0.02em;
+    }
+
     /* ── Streaming pre-render ──────────────────────────────────────── */
     .markdown-body.streaming {
       font-family: var(--mono);
@@ -1403,10 +1446,10 @@
     chartInstances.forEach(c => c.destroy());
     chartInstances = [];
 
+    // ── 1. Extract all chart data from rendered tables ──────────────
     const allCharts = [];
     const seen = new Set();
     contentEl.querySelectorAll('table').forEach(table => {
-      // Grouped Low/Mean/High chart takes priority
       const grouped = extractGroupedEstimateChart(table);
       if (grouped) {
         const key = (grouped.title || 'grouped').toLowerCase();
@@ -1420,20 +1463,41 @@
     });
     if (!allCharts.length) return;
 
+    // ── 2. Group non-grouped metrics by source table ─────────────────
+    // Each table → one chart block (tabbed if 2+ metrics, plain if 1).
+    // Grouped (Low/Mean/High) charts always get their own block.
+    const blocks = [];
+    const tableMap = new Map();
+    allCharts.forEach(cd => {
+      if (cd.isGrouped) {
+        blocks.push({ isGrouped: true, metrics: [cd], table: cd.table });
+      } else {
+        if (!tableMap.has(cd.table)) tableMap.set(cd.table, []);
+        tableMap.get(cd.table).push(cd);
+      }
+    });
+    tableMap.forEach((metrics, table) => blocks.push({ isGrouped: false, metrics, table }));
+
     const section = document.createElement('div');
     section.className = 'chart-section';
 
-    allCharts.forEach((cd, idx) => {
+    const analystMatch = contentEl ? contentEl.textContent.match(/(\d{1,3})\s+analysts/i) : null;
+    const analystStr   = analystMatch ? ` (${analystMatch[1]} analysts)` : '';
+
+    blocks.forEach((blk, blkIdx) => {
+      const cd0      = blk.metrics[0];
+      const src      = detectDataSource(blk.table, contentEl);
+      const isTabbed = !blk.isGrouped && blk.metrics.length > 1;
+
       const block = document.createElement('div');
       block.className = 'chart-block';
 
-      // ── Header: title + source badge ─────────────────────────────
+      // ── Header ───────────────────────────────────────────────────
       const hdr = document.createElement('div');
       hdr.className = 'chart-header';
       const titleEl = document.createElement('div');
       titleEl.className = 'chart-block-title';
-      titleEl.textContent = cd.title;
-      const src = detectDataSource(cd.table, contentEl);
+      titleEl.textContent = isTabbed ? 'Financial Metrics' : cd0.title;
       const bdg = document.createElement('div');
       bdg.className = `chart-source-badge badge-${src.type}`;
       bdg.textContent = src.badge;
@@ -1441,7 +1505,6 @@
       hdr.appendChild(bdg);
       block.appendChild(hdr);
 
-      // ── Source subtitle ───────────────────────────────────────────
       if (src.subtitle) {
         const sub = document.createElement('div');
         sub.className = 'chart-source-subtitle';
@@ -1449,32 +1512,64 @@
         block.appendChild(sub);
       }
 
-      // ── Legend ────────────────────────────────────────────────────
-      const hasEst = !cd.isGrouped && cd.labels && cd.labels.some(l => isEstimate(l));
-      if (hasEst || cd.isGrouped) {
+      // ── Legend ───────────────────────────────────────────────────
+      const anyEst = blk.metrics.some(cd => cd.labels && cd.labels.some(l => isEstimate(l)));
+      if (anyEst || blk.isGrouped) {
         const leg = document.createElement('div');
         leg.className = 'chart-legend';
-        if (cd.isGrouped) {
-          leg.innerHTML = '<span style="color:#8b6914">■ Low</span><span style="color:#f5a623">■ Mean</span><span style="color:#ffd066">■ High</span>';
-        } else {
-          leg.innerHTML = '<span class="legend-actual">■ Actual</span><span class="legend-estimate">▪ Estimate</span><span class="legend-trend">— Trend</span>';
-        }
+        leg.innerHTML = blk.isGrouped
+          ? '<span style="color:#8b6914">■ Low</span><span style="color:#f5a623">■ Mean</span><span style="color:#ffd066">■ High</span>'
+          : '<span class="legend-actual">■ Actual</span><span class="legend-estimate">▪ Estimate</span><span class="legend-trend">— Trend</span>';
         block.appendChild(leg);
       }
 
-      // ── Canvas ─────────────────────────────────────────────────────
-      const wrap = document.createElement('div');
-      wrap.className = 'chart-canvas-wrap';
-      const canvas = document.createElement('canvas');
-      canvas.id = `fin-chart-${idx}-${Date.now()}`;
-      wrap.appendChild(canvas);
-      block.appendChild(wrap);
+      // ── Tabs + canvases ──────────────────────────────────────────
+      const wraps = [];
+      if (isTabbed) {
+        const tabRow  = document.createElement('div');
+        tabRow.className = 'chart-tabs';
+        const tabBtns = [];
 
-      // ── Footnote ────────────────────────────────────────────────────
+        blk.metrics.forEach((cd, mIdx) => {
+          const btn = document.createElement('button');
+          btn.className = 'chart-tab' + (mIdx === 0 ? ' active' : '');
+          btn.textContent = cd.title;
+          tabRow.appendChild(btn);
+          tabBtns.push(btn);
+        });
+        block.appendChild(tabRow);
+
+        blk.metrics.forEach((cd, mIdx) => {
+          const wrap = document.createElement('div');
+          wrap.className = 'chart-canvas-wrap';
+          if (mIdx !== 0) wrap.style.display = 'none';
+          const canvas = document.createElement('canvas');
+          canvas.id = `fin-chart-${blkIdx}-${mIdx}-${Date.now()}`;
+          wrap.appendChild(canvas);
+          block.appendChild(wrap);
+          wraps.push(wrap);
+        });
+
+        // Tab clicks: toggle active class + show/hide the matching canvas wrap
+        tabBtns.forEach((btn, i) => {
+          btn.addEventListener('click', () => {
+            tabBtns.forEach((t, j) => t.classList.toggle('active', i === j));
+            wraps.forEach((w, j) => { w.style.display = i === j ? 'block' : 'none'; });
+          });
+        });
+      } else {
+        const wrap = document.createElement('div');
+        wrap.className = 'chart-canvas-wrap';
+        const canvas = document.createElement('canvas');
+        canvas.id = `fin-chart-${blkIdx}-0-${Date.now()}`;
+        wrap.appendChild(canvas);
+        block.appendChild(wrap);
+        wraps.push(wrap);
+      }
+
+      // ── Footnote ─────────────────────────────────────────────────
       const foot = document.createElement('div');
       foot.className = 'chart-footnote';
-      const analystMatch = contentEl ? contentEl.textContent.match(/(\d{1,3})\s+analysts/i) : null;
-      const analystStr = analystMatch ? ` (${analystMatch[1]} analysts)` : '';
       foot.textContent =
         `Historical data: Yahoo Finance | Current period: SEC Filing | ` +
         `Forward estimates: Analyst Consensus${analystStr} | ` +
@@ -1484,7 +1579,7 @@
       section.appendChild(block);
     });
 
-    // Insert before first "Risk…" h2, else after "Financial…" h2, else append
+    // Insert before Risk h2 / after Financial h2 / append
     let insertBefore = null;
     const headings = Array.from(contentEl.querySelectorAll('h2'));
     for (const h of headings) {
@@ -1499,11 +1594,110 @@
     }
     insertBefore ? contentEl.insertBefore(section, insertBefore) : contentEl.appendChild(section);
 
-    // Render all charts
-    allCharts.forEach((cd, idx) => {
-      const canvas = section.querySelectorAll('canvas')[idx];
-      if (!canvas) return;
-      cd.isGrouped ? renderGroupedChart(canvas, cd) : renderBarChart(canvas, cd);
+    // Render all charts (canvases are in DOM order: all metrics of block 0, then block 1, …)
+    const allCanvases = Array.from(section.querySelectorAll('canvas'));
+    let cIdx = 0;
+    blocks.forEach(blk => {
+      blk.metrics.forEach(cd => {
+        const canvas = allCanvases[cIdx++];
+        if (!canvas) return;
+        blk.isGrouped ? renderGroupedChart(canvas, cd) : renderBarChart(canvas, cd);
+      });
+    });
+  }
+
+  // ── Financial table post-processor ───────────────────────────────────
+  // Must run AFTER renderFinancialCharts so superscripts don't confuse
+  // parseFinancialValue (which reads textContent, not innerHTML).
+  function postProcessFinancialTables(contentEl) {
+    const analystMatch = contentEl.textContent.match(/(\d{1,3})\s+analysts/i);
+    const nAnalysts    = analystMatch ? analystMatch[1] : '';
+
+    contentEl.querySelectorAll('table').forEach(table => {
+      const rows = Array.from(table.querySelectorAll('tr'));
+      if (rows.length < 2) return;
+      const headers = Array.from(rows[0].querySelectorAll('th, td')).map(c => c.textContent.trim());
+      if (headers.length < 3) return;
+
+      // Only act on tables that have ≥2 period columns
+      const periodCount = headers.slice(1).filter(h => isPeriodLabel(h.replace(/[¹²³⁴\s]/g, ''))).length;
+      if (periodCount < 2) return;
+
+      // Classify each column
+      const colTypes = headers.map((h, i) => {
+        if (i === 0) return 'label';
+        const clean = h.replace(/[¹²³⁴\s]/g, '').trim();
+        if (!isPeriodLabel(clean)) return 'other';
+        if (isEstimate(clean))     return 'estimate';
+        if (/q[1-4]/i.test(clean)) return 'sec';   // Quarterly label → SEC 10-Q
+        return 'historical';
+      });
+
+      const hasHist = colTypes.includes('historical');
+      const hasSec  = colTypes.includes('sec');
+      const hasEst  = colTypes.includes('estimate');
+
+      // Style header cells
+      Array.from(rows[0].querySelectorAll('th, td')).forEach((cell, i) => {
+        if (colTypes[i] === 'sec') {
+          cell.style.color      = 'var(--blue)';
+          cell.style.borderLeft = '2px solid rgba(33,150,243,0.5)';
+        } else if (colTypes[i] === 'estimate') {
+          cell.style.opacity = '0.65';
+        }
+      });
+
+      // Process data rows
+      const toRemove = [];
+      for (let r = 1; r < rows.length; r++) {
+        const row   = rows[r];
+        const cells = Array.from(row.querySelectorAll('th, td'));
+        if (!cells.length) continue;
+
+        const firstText = cells[0].textContent.trim().toLowerCase();
+        const rowText   = cells.map(c => c.textContent).join(' ');
+
+        // Drop source/attribution rows that Claude sometimes emits
+        if (/\bsource\b/.test(firstText) ||
+            /yahoo finance historical|sec filing|analyst consensus/i.test(rowText)) {
+          toRemove.push(row);
+          continue;
+        }
+
+        // Style + superscript data cells
+        cells.forEach((cell, i) => {
+          const type = colTypes[i];
+          if (type === 'sec') {
+            cell.style.color           = 'var(--blue)';
+            cell.style.borderLeft      = '2px solid rgba(33,150,243,0.2)';
+            cell.style.backgroundColor = 'rgba(33,150,243,0.04)';
+          } else if (type === 'estimate') {
+            cell.style.opacity = '0.65';
+          }
+          // Add superscript number if cell has content and doesn't already have one
+          if (i > 0 && (type === 'historical' || type === 'sec' || type === 'estimate')) {
+            const txt = cell.textContent.trim();
+            if (txt && !/^n\/?a$/i.test(txt) && !/[¹²³]/.test(txt)) {
+              const n   = type === 'historical' ? '¹' : type === 'sec' ? '²' : '³';
+              const col = type === 'sec' ? 'var(--blue)' : 'var(--text-dim)';
+              cell.innerHTML += `<sup style="font-size:7px;color:${col};opacity:0.65;margin-left:1px">${n}</sup>`;
+            }
+          }
+        });
+      }
+      toRemove.forEach(r => r.remove());
+
+      // Append footnote below table
+      const parts = [];
+      if (hasHist) parts.push('<span>¹ Yahoo Finance Historical</span>');
+      if (hasSec)  parts.push('<span style="color:var(--blue)">² SEC Filing (10-K / 10-Q)</span>');
+      if (hasEst)  parts.push(`<span>³ Analyst Consensus${nAnalysts ? ' — ' + nAnalysts + ' analysts' : ''}</span>`);
+      if (parts.length) {
+        const fn = document.createElement('div');
+        fn.className = 'table-footnote';
+        fn.innerHTML = parts.join('<span style="color:var(--text-dim);margin:0 8px">·</span>');
+        table.insertAdjacentElement('afterend', fn);
+      }
     });
   }
 
@@ -1536,8 +1730,11 @@
     content.innerHTML = marked.parse(markdown);
     content.style.display = 'block';
 
-    // Render financial charts from any tables in the report
+    // Render financial charts, then post-process tables.
+    // Order matters: chart extraction reads clean textContent;
+    // post-processor adds superscripts to innerHTML after extraction.
     renderFinancialCharts(content);
+    postProcessFinancialTables(content);
 
     // Colour verdict
     content.querySelectorAll('h2').forEach(h => {
