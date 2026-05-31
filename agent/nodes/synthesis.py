@@ -63,8 +63,11 @@ def _build_system_prompt() -> str:
     ## Financial Snapshot
     Primary source: use RAG_SEARCH tool results (labelled [SEC Filing]) first —
     these are verbatim passages from 10-K/10-Q filings and are the most reliable.
+    For forward-looking estimates, use CONSENSUS_ESTIMATES results (labelled [Analyst Consensus]).
     Supplement with calculator results and web search figures where SEC data is absent.
     Present as a table where possible: revenue, gross margin, net income, EPS, P/E, D/E.
+    For forward estimates, show the range where available:
+      e.g. "FY2026E EPS: Low $7.89 | Mean $8.74 | High $9.01 [Analyst Consensus — 42 analysts, Yahoo Finance]"
     If no figures were found, state that explicitly — do not fabricate numbers.
 
     ## Risk Factors
@@ -75,11 +78,16 @@ def _build_system_prompt() -> str:
 
     ## Analyst Verdict
     Bullish / Neutral / Bearish with a one-paragraph justification.
+    If consensus estimates are available, reference the analyst recommendation rating and count.
 
     Rules:
     - NEVER invent financial figures. If data is missing, say so.
-    - Cite your source for each claim: [Web Search], [Wikipedia], [ArXiv], [Calculator], [SEC Filing]
+    - Cite your source for each claim: [Web Search], [Wikipedia], [ArXiv], [Calculator], [SEC Filing], [Analyst Consensus]
     - RAG_SEARCH results contain verbatim SEC filing text — always cite these as [SEC Filing]
+    - CONSENSUS_ESTIMATES results: ALWAYS include the analyst count in citations.
+      Example: "$8.74 FY2026E EPS [Analyst Consensus — 42 analysts, Yahoo Finance]"
+    - An estimate from 3 analysts carries far less weight than one from 42 — always report the count
+    - NEVER present a consensus estimate without citing the number of analysts
     - Use professional financial language throughout
     - Keep the total report under 600 words
     """

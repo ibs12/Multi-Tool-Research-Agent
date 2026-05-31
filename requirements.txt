@@ -8,6 +8,7 @@ tavily-python>=0.3.0       # web search
 wikipedia-api>=0.6.0       # Wikipedia lookups
 arxiv>=2.1.0               # paper search
 sympy>=1.13.0              # symbolic math / calculator
+yfinance>=0.2.0            # analyst consensus estimates
 
 # API layer
 fastapi>=0.115.0

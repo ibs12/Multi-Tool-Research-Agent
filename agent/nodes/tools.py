@@ -21,6 +21,8 @@ from __future__ import annotations
 
 import datetime
 
+import asyncio
+
 from agent.state import AgentState, ToolResult
 from tools.calculator import run_calculator
 from tools.wikipedia import run_wikipedia
@@ -182,4 +184,45 @@ async def rag_search_node(state: AgentState) -> dict:
                                           error=None if success else output)],
         "tools_called":    ["rag_search"],
         "tools_remaining": _pop_tool(state, "rag_search"),
+    }
+
+
+# ── Consensus Estimates Node (async wrapper around sync yfinance) ─────────────
+
+async def consensus_estimates_node(state: AgentState) -> dict:
+    """
+    Fetches analyst EPS and revenue consensus estimates from Yahoo Finance.
+
+    Requires a ticker symbol to be present in company_target (the supervisor
+    sets this as 'Company Name (TICK)').  Returns a failed result immediately
+    if no ticker can be extracted — never guesses a ticker.
+    """
+    import re as _re
+    from tools.consensus_estimates import run_consensus_estimates
+
+    target = state.get("company_target", state["query"])
+
+    ticker_match = _re.search(r'\(([A-Z]{1,5})\)', target)
+    if not ticker_match:
+        msg = (
+            "[Consensus Estimates Error] No ticker symbol found in company_target "
+            f"('{target}'). Format must be 'Company Name (TICKER)'."
+        )
+        return {
+            "tool_results":    [_build_result("consensus_estimates", target, msg,
+                                              False, error=msg)],
+            "tools_called":    ["consensus_estimates"],
+            "tools_remaining": _pop_tool(state, "consensus_estimates"),
+        }
+
+    ticker = ticker_match.group(1)
+    # yfinance uses requests (sync) — run in a thread to keep the event loop free
+    output  = await asyncio.to_thread(run_consensus_estimates, ticker)
+    success = not output.startswith("[Consensus Estimates Error]")
+
+    return {
+        "tool_results":    [_build_result("consensus_estimates", ticker, output, success,
+                                          error=None if success else output)],
+        "tools_called":    ["consensus_estimates"],
+        "tools_remaining": _pop_tool(state, "consensus_estimates"),
     }

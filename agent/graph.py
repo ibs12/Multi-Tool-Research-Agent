@@ -39,17 +39,19 @@ from agent.nodes.tools import (
     arxiv_node,
     sec_edgar_node,
     rag_search_node,
+    consensus_estimates_node,
 )
 
 load_dotenv()
 
 TOOL_REGISTRY = {
-    "web_search": web_search_node,
-    "wikipedia":  wikipedia_node,
-    "calculator": calculator_node,
-    "arxiv":      arxiv_node,
-    "sec_edgar":  sec_edgar_node,
-    "rag_search": rag_search_node,
+    "web_search":           web_search_node,
+    "wikipedia":            wikipedia_node,
+    "calculator":           calculator_node,
+    "arxiv":                arxiv_node,
+    "sec_edgar":            sec_edgar_node,
+    "rag_search":           rag_search_node,
+    "consensus_estimates":  consensus_estimates_node,
 }
 
 
