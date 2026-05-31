@@ -656,11 +656,20 @@
     }
 
     .chart-block {
-      background: var(--bg-card);
+      background: #0f1318;
       border: 1px solid var(--border);
-      border-radius: 4px;
+      border-radius: 6px;
       padding: 20px 24px 16px;
-      margin-bottom: 16px;
+      margin-bottom: 24px;
+      box-shadow: 0 4px 20px rgba(0,0,0,0.5);
+    }
+
+    .chart-header {
+      display: flex;
+      align-items: flex-start;
+      justify-content: space-between;
+      gap: 12px;
+      margin-bottom: 3px;
     }
 
     .chart-block-title {
@@ -670,12 +679,48 @@
       letter-spacing: 0.18em;
       color: var(--accent);
       text-transform: uppercase;
-      margin-bottom: 16px;
     }
+
+    .chart-source-subtitle {
+      font-family: var(--mono);
+      font-size: 9px;
+      color: var(--text-dim);
+      margin-bottom: 12px;
+      letter-spacing: 0.03em;
+    }
+
+    .chart-source-badge {
+      font-family: var(--mono);
+      font-size: 8px;
+      font-weight: 600;
+      letter-spacing: 0.12em;
+      padding: 3px 7px;
+      border-radius: 2px;
+      text-transform: uppercase;
+      flex-shrink: 0;
+      margin-top: 1px;
+    }
+
+    .badge-sec   { background: rgba(33,150,243,0.15);  color: var(--blue); }
+    .badge-yahoo { background: rgba(0,208,132,0.15);   color: var(--green); }
+    .badge-live  { background: rgba(245,166,35,0.15);  color: var(--accent); }
+
+    .chart-legend {
+      display: flex;
+      gap: 18px;
+      margin-bottom: 10px;
+      font-family: var(--mono);
+      font-size: 9px;
+      letter-spacing: 0.05em;
+    }
+
+    .legend-actual   { color: #f5a623; }
+    .legend-estimate { color: rgba(245,166,35,0.55); }
+    .legend-trend    { color: var(--green); }
 
     .chart-canvas-wrap {
       position: relative;
-      height: 200px;
+      height: 280px;
     }
 
     /* ── Streaming pre-render ──────────────────────────────────────── */
@@ -962,6 +1007,8 @@
   }
 
   // ── Financial chart helpers ──────────────────────────────────────
+  const CURRENT_YEAR = new Date().getFullYear();
+
   function parseFinancialValue(raw) {
     if (!raw) return null;
     let s = raw.trim().replace(/,/g, '').replace(/^[^0-9\-\.]+/, '');
@@ -984,6 +1031,15 @@
     return /\bq[1-4]\b/i.test(str) ||
            /\b(fy|cy)?\s*20\d{2}\b/i.test(str) ||
            /\b20\d{2}\s*q[1-4]\b/i.test(str);
+  }
+
+  // True if a period label refers to a future/estimated period
+  function isEstimate(label) {
+    if (/\d[Ee]\s*$/.test(label.trim()))     return true;  // FY2026E, 2027e
+    if (/\([Ee]\)\s*$/.test(label.trim()))   return true;  // (E) suffix
+    if (/\bestimate\b/i.test(label))         return true;
+    const m = label.match(/\b(20\d{2})\b/);
+    return !!(m && parseInt(m[1]) > CURRENT_YEAR);
   }
 
   function extractChartsFromTable(table) {
@@ -1044,7 +1100,293 @@
     return charts;
   }
 
+  // Detect tables with Low / Mean / High columns → grouped bar chart
+  function extractGroupedEstimateChart(table) {
+    const rows = Array.from(table.querySelectorAll('tr'));
+    if (rows.length < 2) return null;
+    const hCells = Array.from(rows[0].querySelectorAll('th, td')).map(c => c.textContent.trim().toLowerCase());
+    const lowIdx  = hCells.findIndex(h => h === 'low');
+    const meanIdx = hCells.findIndex(h => h === 'mean');
+    const highIdx = hCells.findIndex(h => h === 'high');
+    if (lowIdx === -1 || meanIdx === -1 || highIdx === -1) return null;
+
+    const labels = [], lowV = [], meanV = [], highV = [];
+    for (let r = 1; r < rows.length; r++) {
+      const cells = Array.from(rows[r].querySelectorAll('th, td')).map(c => c.textContent.trim());
+      if (!cells.length || !isPeriodLabel(cells[0])) continue;
+      const lo = parseFinancialValue(cells[lowIdx]);
+      const me = parseFinancialValue(cells[meanIdx]);
+      const hi = parseFinancialValue(cells[highIdx]);
+      if (lo !== null || me !== null || hi !== null) {
+        labels.push(cells[0]);
+        lowV.push(lo); meanV.push(me); highV.push(hi);
+      }
+    }
+    if (!labels.length) return null;
+    const colHeader = Array.from(rows[0].querySelectorAll('th, td'))[0].textContent.trim();
+    return {
+      title: colHeader || 'Forward Estimates',
+      labels,
+      datasets: [
+        { label: 'Low',  data: lowV,  color: '#8b6914' },
+        { label: 'Mean', data: meanV, color: '#f5a623' },
+        { label: 'High', data: highV, color: '#ffd066' },
+      ]
+    };
+  }
+
+  // Determine chart data provenance from surrounding DOM text
+  function detectDataSource(table, contentEl) {
+    let near = '';
+    let el = table ? table.previousElementSibling : null;
+    for (let i = 0; i < 6 && el; i++) { near += el.textContent; el = el.previousElementSibling; }
+    const all = (contentEl ? contentEl.textContent : '') + near;
+    const monthYear = new Date().toLocaleDateString('en-US', { month: 'long', year: 'numeric' });
+
+    if (/\[Analyst Consensus\]|Yahoo Finance/i.test(all)) {
+      const nm = all.match(/(\d{1,3})\s*analysts/i);
+      return {
+        badge: 'YAHOO FINANCE', type: 'yahoo',
+        subtitle: `Source: Yahoo Finance Analyst Consensus${nm ? ' — ' + nm[1] + ' analysts' : ''} | Retrieved ${monthYear}`
+      };
+    }
+    if (/\[SEC Filing\]|10-K|10-Q|EDGAR/i.test(all)) {
+      return {
+        badge: 'SEC FILING', type: 'sec',
+        subtitle: `Source: SEC EDGAR 10-K / 10-Q [SEC Filing] | ${monthYear}`
+      };
+    }
+    return { badge: 'LIVE DATA', type: 'live', subtitle: '' };
+  }
+
+  // ── Per-chart inline plugins (closures capture chart-specific data) ───
+
+  function makeValueLabelPlugin(displayValues, labels, unit) {
+    return {
+      afterDatasetsDraw(chart) {
+        const meta = chart.getDatasetMeta(0);
+        if (!meta || meta.type !== 'bar') return;
+        const { ctx } = chart;
+        ctx.save();
+        ctx.font = '500 10px "IBM Plex Mono"';
+        ctx.textAlign = 'center';
+        ctx.textBaseline = 'bottom';
+        meta.data.forEach((bar, i) => {
+          if (displayValues[i] == null) return;
+          ctx.fillStyle = isEstimate(labels[i]) ? 'rgba(245,166,35,0.7)' : '#e8edf5';
+          ctx.fillText('$' + displayValues[i] + unit, bar.x, bar.y - 3);
+        });
+        ctx.restore();
+      }
+    };
+  }
+
+  function makeGrowthBadgePlugin(displayValues) {
+    return {
+      afterDatasetsDraw(chart) {
+        const meta = chart.getDatasetMeta(0);
+        if (!meta || meta.type !== 'bar') return;
+        const { ctx, chartArea } = chart;
+        if (!chartArea) return;
+        ctx.save();
+        ctx.font = '500 9px "IBM Plex Mono"';
+        meta.data.forEach((bar, i) => {
+          if (i === 0) return;
+          const prev = displayValues[i - 1], curr = displayValues[i];
+          if (prev == null || curr == null || prev === 0) return;
+          const pct = ((curr - prev) / Math.abs(prev)) * 100;
+          const text = (pct >= 0 ? '+' : '') + pct.toFixed(1) + '%';
+          const isPos = pct >= 0;
+          const tw = ctx.measureText(text).width;
+          const bw = tw + 10, bh = 14;
+          const bx = bar.x - bw / 2;
+          const by = bar.y - 30;
+          if (by < chartArea.top) return;
+
+          // Badge pill background
+          ctx.fillStyle = isPos ? 'rgba(0,208,132,0.18)' : 'rgba(255,71,87,0.18)';
+          const r = 2;
+          ctx.beginPath();
+          ctx.moveTo(bx + r, by); ctx.lineTo(bx + bw - r, by);
+          ctx.quadraticCurveTo(bx + bw, by, bx + bw, by + r);
+          ctx.lineTo(bx + bw, by + bh - r);
+          ctx.quadraticCurveTo(bx + bw, by + bh, bx + bw - r, by + bh);
+          ctx.lineTo(bx + r, by + bh);
+          ctx.quadraticCurveTo(bx, by + bh, bx, by + bh - r);
+          ctx.lineTo(bx, by + r);
+          ctx.quadraticCurveTo(bx, by, bx + r, by);
+          ctx.closePath();
+          ctx.fill();
+
+          ctx.fillStyle = isPos ? '#00d084' : '#ff4757';
+          ctx.textAlign = 'center';
+          ctx.textBaseline = 'middle';
+          ctx.fillText(text, bar.x, by + bh / 2);
+        });
+        ctx.restore();
+      }
+    };
+  }
+
   let chartInstances = [];
+
+  function renderBarChart(canvas, cd) {
+    const maxAbs = Math.max(...cd.values.map(Math.abs));
+    let divisor = 1, unit = '';
+    if      (maxAbs >= 1e9)  { divisor = 1e9;  unit = 'B'; }
+    else if (maxAbs >= 1e6)  { divisor = 1e6;  unit = 'M'; }
+    else if (maxAbs >= 1e3)  { divisor = 1e3;  unit = 'K'; }
+    const displayValues = cd.values.map(v => +(v / divisor).toFixed(2));
+
+    const instance = new Chart(canvas, {
+      type: 'bar',
+      data: {
+        labels: cd.labels,
+        datasets: [
+          {
+            type: 'bar',
+            data: displayValues,
+            // Gradient for historical bars; dimmed for estimates
+            backgroundColor(ctx) {
+              const chart = ctx.chart;
+              const { ctx: c, chartArea } = chart;
+              if (!chartArea) return '#f5a623';
+              if (isEstimate(cd.labels[ctx.dataIndex])) return 'rgba(245,166,35,0.32)';
+              const g = c.createLinearGradient(0, chartArea.top, 0, chartArea.bottom);
+              g.addColorStop(0, '#f5a623');
+              g.addColorStop(1, '#c8841a');
+              return g;
+            },
+            borderColor:  cd.labels.map(l => isEstimate(l) ? 'rgba(245,166,35,0.65)' : 'transparent'),
+            borderWidth:  cd.labels.map(l => isEstimate(l) ? 1.5 : 0),
+            borderRadius: 3,
+            borderSkipped: 'bottom',
+            order: 1,
+          },
+          {
+            // Smooth trend line over all bars
+            type: 'line',
+            data: displayValues,
+            borderColor: '#00d084',
+            borderWidth: 2,
+            tension: 0.4,
+            pointBackgroundColor: '#00d084',
+            pointBorderColor: '#0f1318',
+            pointBorderWidth: 1.5,
+            pointRadius: 4,
+            pointHoverRadius: 5,
+            fill: false,
+            order: 0,
+          }
+        ]
+      },
+      options: {
+        responsive: true,
+        maintainAspectRatio: false,
+        layout: { padding: { top: 40 } },
+        plugins: {
+          legend: { display: false },
+          tooltip: {
+            backgroundColor: '#0a0c0f',
+            borderColor: '#1e2a3a',
+            borderWidth: 1,
+            titleColor: '#7a8fa8',
+            bodyColor: '#e8edf5',
+            titleFont: { family: 'IBM Plex Mono', size: 10 },
+            bodyFont: { family: 'IBM Plex Mono', size: 11 },
+            callbacks: {
+              label(ctx) {
+                if (ctx.datasetIndex === 1) return `  Trend: $${ctx.parsed.y}${unit}`;
+                const sfx = isEstimate(cd.labels[ctx.dataIndex]) ? 'E' : '';
+                return `  $${ctx.parsed.y}${unit}${sfx}`;
+              }
+            }
+          }
+        },
+        scales: {
+          x: {
+            grid: { color: '#1e2a3a', lineWidth: 0.5 },
+            border: { display: false },
+            ticks: { color: '#7a8fa8', font: { family: 'IBM Plex Mono', size: 10 } },
+          },
+          y: {
+            grid: { color: '#1e2a3a', lineWidth: 0.5 },
+            border: { display: false },
+            ticks: {
+              color: '#7a8fa8',
+              font: { family: 'IBM Plex Mono', size: 10 },
+              callback: v => '$' + v + unit,
+            }
+          }
+        },
+        animation: { duration: 700, easing: 'easeOutQuart' },
+      },
+      plugins: [
+        makeValueLabelPlugin(displayValues, cd.labels, unit),
+        makeGrowthBadgePlugin(displayValues),
+      ]
+    });
+    chartInstances.push(instance);
+  }
+
+  function renderGroupedChart(canvas, cd) {
+    const allVals = cd.datasets.flatMap(d => d.data.filter(v => v !== null));
+    const maxAbs = Math.max(...allVals.map(Math.abs));
+    let divisor = 1, unit = '';
+    if      (maxAbs >= 1e9)  { divisor = 1e9;  unit = 'B'; }
+    else if (maxAbs >= 1e6)  { divisor = 1e6;  unit = 'M'; }
+    else if (maxAbs >= 1e3)  { divisor = 1e3;  unit = 'K'; }
+
+    const instance = new Chart(canvas, {
+      type: 'bar',
+      data: {
+        labels: cd.labels,
+        datasets: cd.datasets.map(ds => ({
+          label: ds.label,
+          data: ds.data.map(v => v !== null ? +(v / divisor).toFixed(2) : null),
+          backgroundColor: ds.color,
+          borderRadius: 3,
+          borderSkipped: 'bottom',
+        }))
+      },
+      options: {
+        responsive: true,
+        maintainAspectRatio: false,
+        layout: { padding: { top: 20 } },
+        plugins: {
+          legend: { display: false },
+          tooltip: {
+            backgroundColor: '#0a0c0f',
+            borderColor: '#1e2a3a',
+            borderWidth: 1,
+            titleColor: '#7a8fa8',
+            bodyColor: '#e8edf5',
+            titleFont: { family: 'IBM Plex Mono', size: 10 },
+            bodyFont: { family: 'IBM Plex Mono', size: 11 },
+            callbacks: { label: ctx => `  ${ctx.dataset.label}: $${ctx.parsed.y}${unit}` }
+          }
+        },
+        scales: {
+          x: {
+            grid: { color: '#1e2a3a', lineWidth: 0.5 },
+            border: { display: false },
+            ticks: { color: '#7a8fa8', font: { family: 'IBM Plex Mono', size: 10 } },
+          },
+          y: {
+            grid: { color: '#1e2a3a', lineWidth: 0.5 },
+            border: { display: false },
+            ticks: {
+              color: '#7a8fa8',
+              font: { family: 'IBM Plex Mono', size: 10 },
+              callback: v => '$' + v + unit,
+            }
+          }
+        },
+        animation: { duration: 700, easing: 'easeOutQuart' },
+      }
+    });
+    chartInstances.push(instance);
+  }
 
   function renderFinancialCharts(contentEl) {
     chartInstances.forEach(c => c.destroy());
@@ -1053,33 +1395,73 @@
     const allCharts = [];
     const seen = new Set();
     contentEl.querySelectorAll('table').forEach(table => {
+      // Grouped Low/Mean/High chart takes priority
+      const grouped = extractGroupedEstimateChart(table);
+      if (grouped) {
+        const key = (grouped.title || 'grouped').toLowerCase();
+        if (!seen.has(key)) { seen.add(key); allCharts.push({ ...grouped, isGrouped: true, table }); }
+        return;
+      }
       extractChartsFromTable(table).forEach(cd => {
         const key = cd.title.toLowerCase().replace(/\s+/g, ' ');
-        if (!seen.has(key)) { seen.add(key); allCharts.push(cd); }
+        if (!seen.has(key)) { seen.add(key); allCharts.push({ ...cd, isGrouped: false, table }); }
       });
     });
     if (!allCharts.length) return;
 
-    // Build DOM structure first so canvases exist when Chart.js runs
     const section = document.createElement('div');
     section.className = 'chart-section';
+
     allCharts.forEach((cd, idx) => {
       const block = document.createElement('div');
       block.className = 'chart-block';
+
+      // ── Header: title + source badge ─────────────────────────────
+      const hdr = document.createElement('div');
+      hdr.className = 'chart-header';
       const titleEl = document.createElement('div');
       titleEl.className = 'chart-block-title';
       titleEl.textContent = cd.title;
+      const src = detectDataSource(cd.table, contentEl);
+      const bdg = document.createElement('div');
+      bdg.className = `chart-source-badge badge-${src.type}`;
+      bdg.textContent = src.badge;
+      hdr.appendChild(titleEl);
+      hdr.appendChild(bdg);
+      block.appendChild(hdr);
+
+      // ── Source subtitle ───────────────────────────────────────────
+      if (src.subtitle) {
+        const sub = document.createElement('div');
+        sub.className = 'chart-source-subtitle';
+        sub.textContent = src.subtitle;
+        block.appendChild(sub);
+      }
+
+      // ── Legend ────────────────────────────────────────────────────
+      const hasEst = !cd.isGrouped && cd.labels && cd.labels.some(l => isEstimate(l));
+      if (hasEst || cd.isGrouped) {
+        const leg = document.createElement('div');
+        leg.className = 'chart-legend';
+        if (cd.isGrouped) {
+          leg.innerHTML = '<span style="color:#8b6914">■ Low</span><span style="color:#f5a623">■ Mean</span><span style="color:#ffd066">■ High</span>';
+        } else {
+          leg.innerHTML = '<span class="legend-actual">■ Actual</span><span class="legend-estimate">▪ Estimate</span><span class="legend-trend">— Trend</span>';
+        }
+        block.appendChild(leg);
+      }
+
+      // ── Canvas ─────────────────────────────────────────────────────
       const wrap = document.createElement('div');
       wrap.className = 'chart-canvas-wrap';
       const canvas = document.createElement('canvas');
       canvas.id = `fin-chart-${idx}-${Date.now()}`;
       wrap.appendChild(canvas);
-      block.appendChild(titleEl);
       block.appendChild(wrap);
       section.appendChild(block);
     });
 
-    // Insertion point: before first "Risk…" h2, else after "Financial…" h2, else append
+    // Insert before first "Risk…" h2, else after "Financial…" h2, else append
     let insertBefore = null;
     const headings = Array.from(contentEl.querySelectorAll('h2'));
     for (const h of headings) {
@@ -1088,71 +1470,17 @@
     if (!insertBefore) {
       const finH2 = headings.find(h => /financial/i.test(h.textContent));
       if (finH2) {
-        const idx = headings.indexOf(finH2);
-        if (idx < headings.length - 1) insertBefore = headings[idx + 1];
+        const i = headings.indexOf(finH2);
+        if (i < headings.length - 1) insertBefore = headings[i + 1];
       }
     }
     insertBefore ? contentEl.insertBefore(section, insertBefore) : contentEl.appendChild(section);
 
-    // Render each chart
+    // Render all charts
     allCharts.forEach((cd, idx) => {
       const canvas = section.querySelectorAll('canvas')[idx];
       if (!canvas) return;
-      const maxAbs = Math.max(...cd.values.map(Math.abs));
-      let divisor = 1, unit = '';
-      if      (maxAbs >= 1e9)  { divisor = 1e9;  unit = 'B'; }
-      else if (maxAbs >= 1e6)  { divisor = 1e6;  unit = 'M'; }
-      else if (maxAbs >= 1e3)  { divisor = 1e3;  unit = 'K'; }
-      const displayValues = cd.values.map(v => +(v / divisor).toFixed(2));
-
-      const instance = new Chart(canvas, {
-        type: 'bar',
-        data: {
-          labels: cd.labels,
-          datasets: [{
-            data: displayValues,
-            backgroundColor: '#f5a623',
-            borderColor: '#c8841a',
-            borderWidth: 1,
-            borderRadius: 2,
-          }]
-        },
-        options: {
-          responsive: true,
-          maintainAspectRatio: false,
-          plugins: {
-            legend: { display: false },
-            tooltip: {
-              backgroundColor: '#0f1318',
-              borderColor: '#1e2a3a',
-              borderWidth: 1,
-              titleColor: '#7a8fa8',
-              bodyColor: '#e8edf5',
-              titleFont: { family: 'IBM Plex Mono', size: 10 },
-              bodyFont: { family: 'IBM Plex Mono', size: 11 },
-              callbacks: { label: ctx => ` ${ctx.parsed.y}${unit}` }
-            }
-          },
-          scales: {
-            x: {
-              grid: { color: '#1e2a3a' },
-              border: { display: false },
-              ticks: { color: '#7a8fa8', font: { family: 'IBM Plex Mono', size: 10 } },
-            },
-            y: {
-              grid: { color: '#1e2a3a' },
-              border: { display: false },
-              ticks: {
-                color: '#7a8fa8',
-                font: { family: 'IBM Plex Mono', size: 10 },
-                callback: v => v + unit,
-              }
-            }
-          },
-          animation: { duration: 600, easing: 'easeOutQuart' },
-        }
-      });
-      chartInstances.push(instance);
+      cd.isGrouped ? renderGroupedChart(canvas, cd) : renderBarChart(canvas, cd);
     });
   }
 
