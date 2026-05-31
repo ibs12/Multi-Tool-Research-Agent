@@ -1096,6 +1096,13 @@
     return !!(m && parseInt(m[1]) > CURRENT_YEAR);
   }
 
+  // True if the label is a quarterly SEC filing period (Q2 FY2026, Q1 2026, …)
+  // These bars render in blue to distinguish primary-source data from historical estimates.
+  function isSecFilingPeriod(label) {
+    if (isEstimate(label)) return false;    // forward estimates are not SEC filing data
+    return /\bq[1-4]\b/i.test(label);      // any Q[1-4] label that isn't an estimate
+  }
+
   function extractChartsFromTable(table) {
     const rows = Array.from(table.querySelectorAll('tr'));
     if (rows.length < 2) return [];
@@ -1227,7 +1234,9 @@
         ctx.textBaseline = 'bottom';
         meta.data.forEach((bar, i) => {
           if (displayValues[i] == null) return;
-          ctx.fillStyle = isEstimate(labels[i]) ? 'rgba(245,166,35,0.7)' : '#e8edf5';
+          ctx.fillStyle = isEstimate(labels[i])        ? 'rgba(245,166,35,0.7)' :
+                          isSecFilingPeriod(labels[i]) ? '#64b5f6'              :
+                          '#e8edf5';
           ctx.fillText('$' + displayValues[i] + unit, bar.x, bar.y - 3);
         });
         ctx.restore();
@@ -1305,14 +1314,24 @@
               const chart = ctx.chart;
               const { ctx: c, chartArea } = chart;
               if (!chartArea) return '#f5a623';
-              if (isEstimate(cd.labels[ctx.dataIndex])) return 'rgba(245,166,35,0.32)';
+              const lbl = cd.labels[ctx.dataIndex];
+              if (isEstimate(lbl)) return 'rgba(245,166,35,0.32)';
+              if (isSecFilingPeriod(lbl)) {
+                const g = c.createLinearGradient(0, chartArea.top, 0, chartArea.bottom);
+                g.addColorStop(0, '#2196f3');
+                g.addColorStop(1, '#1565c0');
+                return g;
+              }
               const g = c.createLinearGradient(0, chartArea.top, 0, chartArea.bottom);
               g.addColorStop(0, '#f5a623');
               g.addColorStop(1, '#c8841a');
               return g;
             },
-            borderColor:  cd.labels.map(l => isEstimate(l) ? 'rgba(245,166,35,0.65)' : 'transparent'),
-            borderWidth:  cd.labels.map(l => isEstimate(l) ? 1.5 : 0),
+            borderColor: cd.labels.map(l =>
+              isEstimate(l)        ? 'rgba(245,166,35,0.65)' :
+              isSecFilingPeriod(l) ? 'rgba(33,150,243,0.8)'  :
+              'transparent'),
+            borderWidth: cd.labels.map(l => (isEstimate(l) || isSecFilingPeriod(l)) ? 1.5 : 0),
             borderRadius: 3,
             borderSkipped: 'bottom',
             order: 1,
@@ -1351,7 +1370,8 @@
             callbacks: {
               label(ctx) {
                 if (ctx.datasetIndex === 1) return `  Trend: $${ctx.parsed.y}${unit}`;
-                const sfx = isEstimate(cd.labels[ctx.dataIndex]) ? 'E' : '';
+                const lbl = cd.labels[ctx.dataIndex];
+                const sfx = isEstimate(lbl) ? 'E' : isSecFilingPeriod(lbl) ? ' (SEC)' : '';
                 return `  $${ctx.parsed.y}${unit}${sfx}`;
               }
             }
@@ -1513,13 +1533,20 @@
       }
 
       // ── Legend ───────────────────────────────────────────────────
-      const anyEst = blk.metrics.some(cd => cd.labels && cd.labels.some(l => isEstimate(l)));
-      if (anyEst || blk.isGrouped) {
+      const anyEst    = blk.metrics.some(cd => cd.labels && cd.labels.some(l => isEstimate(l)));
+      const anySecBar = blk.metrics.some(cd => cd.labels && cd.labels.some(l => isSecFilingPeriod(l)));
+      if (anyEst || anySecBar || blk.isGrouped) {
         const leg = document.createElement('div');
         leg.className = 'chart-legend';
-        leg.innerHTML = blk.isGrouped
-          ? '<span style="color:#8b6914">■ Low</span><span style="color:#f5a623">■ Mean</span><span style="color:#ffd066">■ High</span>'
-          : '<span class="legend-actual">■ Actual</span><span class="legend-estimate">▪ Estimate</span><span class="legend-trend">— Trend</span>';
+        if (blk.isGrouped) {
+          leg.innerHTML = '<span style="color:#8b6914">■ Low</span><span style="color:#f5a623">■ Mean</span><span style="color:#ffd066">■ High</span>';
+        } else {
+          let lhtml = '<span class="legend-actual">■ Actual</span>';
+          if (anySecBar) lhtml += '<span style="color:var(--blue)">■ SEC Filing</span>';
+          if (anyEst)    lhtml += '<span class="legend-estimate">▪ Estimate</span>';
+          lhtml += '<span class="legend-trend">— Trend</span>';
+          leg.innerHTML = lhtml;
+        }
         block.appendChild(leg);
       }
 

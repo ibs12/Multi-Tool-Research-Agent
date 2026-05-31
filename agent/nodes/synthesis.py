@@ -61,20 +61,30 @@ def _build_system_prompt() -> str:
     Latest news, earnings, strategic moves. Source: web search results.
 
     ## Financial Snapshot
-    Build a multi-year financial table when data is available.
-    Column order (left to right): oldest historical year → most recent → forward estimates.
-    Target layout: FY2022 | FY2023 | FY2024 | FY2025 | FY2026E | FY2027E
-    Mark forward estimate columns with the 'E' suffix so they are visually distinct.
+    The financial snapshot table MUST use EXACTLY this column order
+    (omit a column only when no data at all exists for it):
 
-    Data sources and citation rules (STRICTLY separate — never mix in the same cell):
-    - Historical years (from HISTORICAL FINANCIALS tool output): cite as [Yahoo Finance Historical]
-    - Most recent completed fiscal year / quarter from SEC filing: cite as [SEC Filing]
-    - Forward estimates (FY..E columns) from CONSENSUS_ESTIMATES: cite as [Analyst Consensus — {{n}} analysts]
-    - If a cell has no data, write "N/A" — never fabricate numbers
+      Metric | FY2022 | FY2023 | FY2024 | FY2025 | Q2 FY2026 | FY2026E | FY2027E
 
-    Rows to include: Revenue, Gross Margin, Net Income, EPS (where available).
-    For forward EPS/revenue estimates, include the range inline:
-      e.g. "$8.74 (Low $7.89 – High $9.01) [Analyst Consensus — 42 analysts, Yahoo Finance]"
+    Column definitions and citation rules (STRICTLY separate sources — never mix in one cell):
+    - FY2022 – FY2025 : Annual figures from HISTORICAL FINANCIALS tool. Cite each cell ¹.
+    - Q2 FY2026       : Current-period figures from RAG_SEARCH (SEC 10-Q filing). Cite each cell ².
+                        • Use the quarter's actual value (e.g. Revenue $111.2B for the quarter).
+                        • For metrics reported on a half-year basis write "H1: $X" in the cell.
+                        • If the figure is not in the SEC filing data, write "—" (not N/A).
+                        • DO NOT move this data to a prose note below the table.
+                          It MUST appear as a column. This column is the most recent primary-source data.
+    - FY2026E/FY2027E : Forward estimates from CONSENSUS_ESTIMATES. Cite each cell ³.
+                        Include the estimate range: e.g. "$478B (Low $468B – High $485B)".
+
+    Rows to include — only rows where at least one cell has a real value:
+      Revenue | Gross Margin % | Net Income | EPS
+
+    IMPORTANT for banks and financial institutions (JPMorgan, Citigroup, Goldman Sachs, etc.):
+      Gross Margin % is not a standard metric for banks. Substitute Net Interest Margin
+      or Operating Margin if that data is available in the tool results.
+      If neither is available, OMIT the Gross Margin row entirely — do not show a row
+      of N/A or "—" values across all columns.
 
     ## Risk Factors
     3-5 bullet points. Draw from news sentiment, sector context, and academic research.
