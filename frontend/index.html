@@ -7,6 +7,7 @@
   <link rel="preconnect" href="https://fonts.googleapis.com" />
   <link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@300;400;500;600&family=IBM+Plex+Sans:wght@300;400;500;600&display=swap" rel="stylesheet" />
   <script src="https://cdnjs.cloudflare.com/ajax/libs/marked/9.1.6/marked.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
 
   <style>
     /* ── Design system ─────────────────────────────────────────────── */
@@ -649,6 +650,34 @@
     .verdict-bearish  { color: var(--red) !important; font-weight: 700; }
     .verdict-neutral  { color: var(--accent) !important; font-weight: 700; }
 
+    /* ── Financial charts ──────────────────────────────────────────── */
+    .chart-section {
+      margin: 8px 0 32px;
+    }
+
+    .chart-block {
+      background: var(--bg-card);
+      border: 1px solid var(--border);
+      border-radius: 4px;
+      padding: 20px 24px 16px;
+      margin-bottom: 16px;
+    }
+
+    .chart-block-title {
+      font-family: var(--mono);
+      font-size: 10px;
+      font-weight: 600;
+      letter-spacing: 0.18em;
+      color: var(--accent);
+      text-transform: uppercase;
+      margin-bottom: 16px;
+    }
+
+    .chart-canvas-wrap {
+      position: relative;
+      height: 200px;
+    }
+
     /* ── Streaming pre-render ──────────────────────────────────────── */
     .markdown-body.streaming {
       font-family: var(--mono);
@@ -932,6 +961,201 @@
     log('system', '◦', 'Log cleared.');
   }
 
+  // ── Financial chart helpers ──────────────────────────────────────
+  function parseFinancialValue(raw) {
+    if (!raw) return null;
+    let s = raw.trim().replace(/,/g, '').replace(/^[^0-9\-\.]+/, '');
+    let mult = 1;
+    const last = s.slice(-1).toLowerCase();
+    if      (last === 'b') { mult = 1e9;  s = s.slice(0, -1); }
+    else if (last === 'm') { mult = 1e6;  s = s.slice(0, -1); }
+    else if (last === 't') { mult = 1e12; s = s.slice(0, -1); }
+    else if (last === 'k') { mult = 1e3;  s = s.slice(0, -1); }
+    s = s.replace(/%$/, '');
+    const n = parseFloat(s);
+    return isNaN(n) ? null : n * mult;
+  }
+
+  const METRIC_RE = /\b(revenue|total revenue|net revenue|eps|earnings per share|net income|gross margin|gross profit|operating income|ebitda|free cash flow|fcf)\b/i;
+
+  function isFinancialMetric(str) { return METRIC_RE.test(str); }
+
+  function isPeriodLabel(str) {
+    return /\bq[1-4]\b/i.test(str) ||
+           /\b(fy|cy)?\s*20\d{2}\b/i.test(str) ||
+           /\b20\d{2}\s*q[1-4]\b/i.test(str);
+  }
+
+  function extractChartsFromTable(table) {
+    const rows = Array.from(table.querySelectorAll('tr'));
+    if (rows.length < 2) return [];
+    const headerCells = Array.from(rows[0].querySelectorAll('th, td')).map(c => c.textContent.trim());
+    if (headerCells.length < 2) return [];
+
+    const charts = [];
+    const seen = new Set();
+
+    // Orientation A: header row has period labels in cols 1+, col 0 is metric name
+    const periodCols = headerCells.slice(1).reduce((acc, h, i) => {
+      if (isPeriodLabel(h)) acc.push({ label: h, colIdx: i + 1 });
+      return acc;
+    }, []);
+
+    if (periodCols.length >= 2) {
+      for (let r = 1; r < rows.length; r++) {
+        const cells = Array.from(rows[r].querySelectorAll('th, td')).map(c => c.textContent.trim());
+        if (!cells.length || !isFinancialMetric(cells[0])) continue;
+        const key = cells[0].toLowerCase().replace(/\s+/g, ' ');
+        if (seen.has(key)) continue;
+        const pairs = periodCols
+          .map(({ label, colIdx }) => ({ label, value: parseFinancialValue(cells[colIdx]) }))
+          .filter(p => p.value !== null);
+        if (pairs.length >= 2) {
+          seen.add(key);
+          charts.push({ title: cells[0], labels: pairs.map(p => p.label), values: pairs.map(p => p.value) });
+        }
+      }
+      return charts;
+    }
+
+    // Orientation B: col 0 has period labels, header row has metric names
+    const periodRows = rows.slice(1).filter(r => {
+      const c = Array.from(r.querySelectorAll('th, td'));
+      return c.length > 0 && isPeriodLabel(c[0].textContent.trim());
+    });
+    if (periodRows.length >= 2) {
+      const periodLabels = periodRows.map(r => Array.from(r.querySelectorAll('th, td'))[0].textContent.trim());
+      for (let c = 1; c < headerCells.length; c++) {
+        const metric = headerCells[c];
+        if (!isFinancialMetric(metric)) continue;
+        const key = metric.toLowerCase().replace(/\s+/g, ' ');
+        if (seen.has(key)) continue;
+        const values = periodRows.map(r => {
+          const cells = Array.from(r.querySelectorAll('th, td'));
+          return parseFinancialValue(cells[c] ? cells[c].textContent : '');
+        });
+        const pairs = periodLabels.map((l, i) => ({ label: l, value: values[i] })).filter(p => p.value !== null);
+        if (pairs.length >= 2) {
+          seen.add(key);
+          charts.push({ title: metric, labels: pairs.map(p => p.label), values: pairs.map(p => p.value) });
+        }
+      }
+    }
+    return charts;
+  }
+
+  let chartInstances = [];
+
+  function renderFinancialCharts(contentEl) {
+    chartInstances.forEach(c => c.destroy());
+    chartInstances = [];
+
+    const allCharts = [];
+    const seen = new Set();
+    contentEl.querySelectorAll('table').forEach(table => {
+      extractChartsFromTable(table).forEach(cd => {
+        const key = cd.title.toLowerCase().replace(/\s+/g, ' ');
+        if (!seen.has(key)) { seen.add(key); allCharts.push(cd); }
+      });
+    });
+    if (!allCharts.length) return;
+
+    // Build DOM structure first so canvases exist when Chart.js runs
+    const section = document.createElement('div');
+    section.className = 'chart-section';
+    allCharts.forEach((cd, idx) => {
+      const block = document.createElement('div');
+      block.className = 'chart-block';
+      const titleEl = document.createElement('div');
+      titleEl.className = 'chart-block-title';
+      titleEl.textContent = cd.title;
+      const wrap = document.createElement('div');
+      wrap.className = 'chart-canvas-wrap';
+      const canvas = document.createElement('canvas');
+      canvas.id = `fin-chart-${idx}-${Date.now()}`;
+      wrap.appendChild(canvas);
+      block.appendChild(titleEl);
+      block.appendChild(wrap);
+      section.appendChild(block);
+    });
+
+    // Insertion point: before first "Risk…" h2, else after "Financial…" h2, else append
+    let insertBefore = null;
+    const headings = Array.from(contentEl.querySelectorAll('h2'));
+    for (const h of headings) {
+      if (/risk/i.test(h.textContent)) { insertBefore = h; break; }
+    }
+    if (!insertBefore) {
+      const finH2 = headings.find(h => /financial/i.test(h.textContent));
+      if (finH2) {
+        const idx = headings.indexOf(finH2);
+        if (idx < headings.length - 1) insertBefore = headings[idx + 1];
+      }
+    }
+    insertBefore ? contentEl.insertBefore(section, insertBefore) : contentEl.appendChild(section);
+
+    // Render each chart
+    allCharts.forEach((cd, idx) => {
+      const canvas = section.querySelectorAll('canvas')[idx];
+      if (!canvas) return;
+      const maxAbs = Math.max(...cd.values.map(Math.abs));
+      let divisor = 1, unit = '';
+      if      (maxAbs >= 1e9)  { divisor = 1e9;  unit = 'B'; }
+      else if (maxAbs >= 1e6)  { divisor = 1e6;  unit = 'M'; }
+      else if (maxAbs >= 1e3)  { divisor = 1e3;  unit = 'K'; }
+      const displayValues = cd.values.map(v => +(v / divisor).toFixed(2));
+
+      const instance = new Chart(canvas, {
+        type: 'bar',
+        data: {
+          labels: cd.labels,
+          datasets: [{
+            data: displayValues,
+            backgroundColor: '#f5a623',
+            borderColor: '#c8841a',
+            borderWidth: 1,
+            borderRadius: 2,
+          }]
+        },
+        options: {
+          responsive: true,
+          maintainAspectRatio: false,
+          plugins: {
+            legend: { display: false },
+            tooltip: {
+              backgroundColor: '#0f1318',
+              borderColor: '#1e2a3a',
+              borderWidth: 1,
+              titleColor: '#7a8fa8',
+              bodyColor: '#e8edf5',
+              titleFont: { family: 'IBM Plex Mono', size: 10 },
+              bodyFont: { family: 'IBM Plex Mono', size: 11 },
+              callbacks: { label: ctx => ` ${ctx.parsed.y}${unit}` }
+            }
+          },
+          scales: {
+            x: {
+              grid: { color: '#1e2a3a' },
+              border: { display: false },
+              ticks: { color: '#7a8fa8', font: { family: 'IBM Plex Mono', size: 10 } },
+            },
+            y: {
+              grid: { color: '#1e2a3a' },
+              border: { display: false },
+              ticks: {
+                color: '#7a8fa8',
+                font: { family: 'IBM Plex Mono', size: 10 },
+                callback: v => v + unit,
+              }
+            }
+          },
+          animation: { duration: 600, easing: 'easeOutQuart' },
+        }
+      });
+      chartInstances.push(instance);
+    });
+  }
+
   // ── UI state helpers ─────────────────────────────────────────────────
   function setLoading(on) {
     const btn = document.getElementById('runBtn');
@@ -960,6 +1184,9 @@
     const content = document.getElementById('reportContent');
     content.innerHTML = marked.parse(markdown);
     content.style.display = 'block';
+
+    // Render financial charts from any tables in the report
+    renderFinancialCharts(content);
 
     // Colour verdict
     content.querySelectorAll('h2').forEach(h => {
