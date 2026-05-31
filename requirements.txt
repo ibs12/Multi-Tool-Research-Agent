@@ -19,7 +19,7 @@ pydantic>=2.8.0
 --extra-index-url https://download.pytorch.org/whl/cpu
 torch>=2.0.0                   # CPU-only wheel (~500MB smaller than CUDA)
 sentence-transformers>=3.0.0   # all-MiniLM-L6-v2 embeddings
-psycopg2-binary>=2.9.0         # pgvector backend
+asyncpg>=0.29.0                # pgvector backend (async)
 
 # Utilities
 python-dotenv>=1.0.0

@@ -17,10 +17,12 @@ SSE event types:
   done            — stream closed          {"event"}
 
 Concurrency model:
-  _semaphore(3) limits concurrent streaming requests.  Each request runs the
-  research graph in a dedicated daemon thread bridged to the async generator
-  via asyncio.Queue (call_soon_threadsafe for thread → loop hand-off).
-  Synthesis tokens use a thread_queue.Queue bridge with run_in_executor.
+  _semaphore(3) caps concurrent streaming requests.
+  graph.astream() is awaited natively — no threads or queues needed for the
+  graph phase.  Supervisor (sync) runs in LangGraph's thread executor;
+  async tool nodes (web_search, sec_edgar, rag_search) are awaited directly.
+  Synthesis uses a thread + thread_queue.Queue bridge because stream_synthesis()
+  is a sync generator wrapping the Anthropic streaming SDK.
 
 Interview talking point:
   SSE is preferred over WebSockets here because communication is strictly
@@ -68,8 +70,7 @@ _frontend_dir = _os.path.join(_os.path.dirname(_os.path.dirname(__file__)), "fro
 if _os.path.exists(_frontend_dir):
     app.mount("/app", StaticFiles(directory=_frontend_dir, html=True), name="frontend")
 
-# Limit concurrent streaming requests to avoid OOM on Railway's 512MB plan.
-# asyncio.Semaphore is safe to create at module level in Python 3.10+.
+# Limit concurrent streaming requests to avoid OOM on Railway's 512 MB plan.
 _semaphore = asyncio.Semaphore(3)
 
 
@@ -138,12 +139,11 @@ async def research_stream(req: ResearchRequest):
     """
     Stream agent progress as Server-Sent Events.
 
-    Phase 1 — graph loop: emits node_complete events for each supervisor
-               and dispatcher hop as they happen (not buffered).
-    Phase 2 — synthesis:  emits report_chunk for every token Claude streams,
-               then report with the complete markdown when done.
+    Phase 1 — graph loop: emits node_complete events as each node finishes,
+               delivered in real time via graph.astream().
+    Phase 2 — synthesis:  emits report_chunk per token, then the full report.
 
-    Returns 503 immediately if all 3 concurrent slots are occupied.
+    Returns 503 immediately when all 3 concurrent slots are occupied.
     """
     if _semaphore.locked():
         raise HTTPException(
@@ -159,48 +159,32 @@ async def research_stream(req: ResearchRequest):
 
 async def _stream_generator(req: ResearchRequest) -> AsyncGenerator[str, None]:
     async with _semaphore:
-        loop = asyncio.get_running_loop()
         initial_state = make_initial_state(req.query, req.max_iterations)
 
-        # ── Phase 1: stream the research graph in real time ─────────────────
-        # graph.stream() is a blocking sync generator.  We run it in a daemon
-        # thread and hand each snapshot back to the event loop via
-        # call_soon_threadsafe, which is the only thread-safe asyncio bridge.
-        snap_q: asyncio.Queue = asyncio.Queue()
-
-        def _run_graph():
-            try:
-                for snap in graph.stream(initial_state, stream_mode="values"):
-                    loop.call_soon_threadsafe(snap_q.put_nowait, snap)
-            except Exception as exc:
-                loop.call_soon_threadsafe(snap_q.put_nowait, exc)
-            finally:
-                loop.call_soon_threadsafe(snap_q.put_nowait, None)  # sentinel
-
-        threading.Thread(target=_run_graph, daemon=True).start()
-
+        # ── Phase 1: native async graph streaming ─────────────────────────────
+        # graph.astream() awaits async nodes directly and runs sync nodes
+        # (supervisor) in LangGraph's internal thread executor — no manual
+        # thread management or queue bridging needed.
         prev        = initial_state
         final_state = initial_state
 
-        while True:
-            item = await snap_q.get()
-            if item is None:
-                break
-            if isinstance(item, Exception):
-                yield _sse({"event": "error", "data": str(item)})
-                yield _sse({"event": "done"})
-                return
-            final_state = item
-            node_name, payload = _diff_state(prev, item)
-            if node_name:
-                yield _sse({"event": "node_complete", "node": node_name, "data": payload})
-                await asyncio.sleep(0)
-            prev = item
+        try:
+            async for state in graph.astream(initial_state, stream_mode="values"):
+                final_state = state
+                node_name, payload = _diff_state(prev, state)
+                if node_name:
+                    yield _sse({"event": "node_complete", "node": node_name, "data": payload})
+                    await asyncio.sleep(0)
+                prev = state
+        except Exception as e:
+            yield _sse({"event": "error", "data": str(e)})
+            yield _sse({"event": "done"})
+            return
 
-        # ── Phase 2: stream synthesis token-by-token ─────────────────────────
-        # stream_synthesis() is a blocking generator — bridge to async via
-        # a plain thread_queue.Queue + run_in_executor so q.get() doesn't
-        # stall the event loop.
+        # ── Phase 2: synthesis streaming (sync generator → thread bridge) ─────
+        # stream_synthesis() wraps the Anthropic sync streaming SDK, so it
+        # must run in a thread.  thread_queue.Queue + asyncio.to_thread bridges
+        # the blocking q.get() back to the async generator.
         yield _sse({"event": "node_complete", "node": "synthesis", "data": {"streaming": True}})
         await asyncio.sleep(0)
 
@@ -219,7 +203,7 @@ async def _stream_generator(req: ResearchRequest) -> AsyncGenerator[str, None]:
 
         full_report = ""
         while True:
-            item = await loop.run_in_executor(None, synth_q.get)
+            item = await asyncio.to_thread(synth_q.get)
             if item is None:
                 break
             event_type, data = item

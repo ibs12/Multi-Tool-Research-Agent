@@ -6,24 +6,27 @@ Assembles the LangGraph StateGraph for the research loop.
 Topology:
     [START] → supervisor → dispatcher → supervisor (loops)
                         ↘                          ↘
-                         synthesis (END)            synthesis (END)
+                         [END]                      [END]
 
 Synthesis is NOT a node in this graph — it is called separately by both
-run.py (CLI) and api/main.py (API) after the graph completes.  This lets
-the streaming endpoint deliver synthesis tokens one-by-one in real time
-without needing to intercept LangGraph's internal node execution.
+run.py (CLI) and api/main.py (API) after the graph completes.
 
 Parallel tool execution:
-    The async_tool_dispatcher runs all queued tools concurrently via
-    asyncio.gather() + ThreadPoolExecutor.  Tool functions are sync
-    (blocking I/O), so run_in_executor overlaps their wait times.
-    Typical 2-tool iteration: 11 s sequential → 8 s parallel.
+    async_tool_dispatcher is a proper async def so LangGraph's astream()
+    awaits it directly in the running event loop.  Sync tool nodes
+    (wikipedia, calculator, arxiv) are wrapped with asyncio.to_thread so
+    they don't block the loop.  Async tool nodes (web_search, sec_edgar,
+    rag_search) are awaited directly.  All tools run concurrently via
+    asyncio.gather — no ThreadPoolExecutor needed.
+
+    Under graph.invoke() (CLI), LangGraph runs async nodes via asyncio.run()
+    internally so the same code works in both sync and async contexts.
 """
 
 from __future__ import annotations
 
 import asyncio
-from concurrent.futures import ThreadPoolExecutor
+import inspect
 from dotenv import load_dotenv
 from langgraph.graph import StateGraph, START, END
 
@@ -40,7 +43,6 @@ from agent.nodes.tools import (
 
 load_dotenv()
 
-# Map tool names → synchronous node functions
 TOOL_REGISTRY = {
     "web_search": web_search_node,
     "wikipedia":  wikipedia_node,
@@ -53,41 +55,35 @@ TOOL_REGISTRY = {
 
 # ── Async parallel dispatcher ─────────────────────────────────────────────────
 
-def async_tool_dispatcher(state: AgentState) -> dict:
+async def async_tool_dispatcher(state: AgentState) -> dict:
     """
     Runs all queued tools concurrently using asyncio.gather().
 
-    Each tool function is synchronous (blocking I/O), so run_in_executor
-    lets asyncio overlap their wait times without blocking the event loop.
-    asyncio.run() is used directly — LangGraph calls nodes from a plain
-    thread (not an async context), so a fresh event loop is always safe.
+    Async tool nodes (web_search, sec_edgar, rag_search) are awaited
+    directly.  Sync tool nodes (wikipedia, calculator, arxiv) are wrapped
+    with asyncio.to_thread so their blocking I/O doesn't stall the loop.
+    A fixed pool of at most 4 threads handles the sync tools.
 
     Interview talking point:
-      "Tool functions use blocking I/O (HTTP, subprocess). I run them in
-       a ThreadPoolExecutor so asyncio.gather can overlap wait times.
-       asyncio.run() is correct here because LangGraph invokes nodes
-       synchronously from a worker thread — there is no running loop."
+      "Tool functions use a mix of async I/O and blocking sync libraries.
+       asyncio.iscoroutinefunction lets me dispatch each tool correctly
+       without any manual routing — async tools run natively in the loop,
+       sync tools run in a thread pool.  asyncio.gather overlaps all of
+       them regardless of type."
     """
-    remaining  = state.get("tools_remaining", [])
+    remaining   = state.get("tools_remaining", [])
     valid_tools = [t for t in remaining if t.split(":")[0] in TOOL_REGISTRY]
 
     if not valid_tools:
         return {}
 
-    async def _run_all():
-        executor = ThreadPoolExecutor(max_workers=4)
-        try:
-            tasks = [
-                asyncio.get_event_loop().run_in_executor(
-                    executor, TOOL_REGISTRY[t.split(":")[0]], state
-                )
-                for t in valid_tools
-            ]
-            return await asyncio.gather(*tasks)
-        finally:
-            executor.shutdown(wait=False)
+    async def _call(tool_spec: str):
+        fn = TOOL_REGISTRY[tool_spec.split(":")[0]]
+        if inspect.iscoroutinefunction(fn):
+            return await fn(state)
+        return await asyncio.to_thread(fn, state)
 
-    tool_outputs = asyncio.run(_run_all())
+    tool_outputs = await asyncio.gather(*[_call(t) for t in valid_tools])
 
     merged: dict = {"tools_remaining": [], "tool_results": [], "tools_called": []}
     for output in tool_outputs:

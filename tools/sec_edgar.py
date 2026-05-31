@@ -8,25 +8,14 @@ Uses two complementary EDGAR APIs:
   2. EDGAR submissions API       -- returns structured filing history per CIK
   3. EDGAR full-text search      -- fallback for unmatched tickers
 
-The submissions API (data.sec.gov) is the most reliable -- it returns
-structured JSON with exact form types, dates, and accession numbers,
-solving the "Unknown" fields that appeared when using the full-text
-search index as the primary source.
-
-Interview talking point:
-  "I switched from the EDGAR full-text search index to the submissions API.
-   The full-text index returns document text hits that don't always carry
-   structured metadata. The submissions API returns a company's complete
-   filing history as structured JSON -- real form types, dates, and links."
+Rewritten to use httpx.AsyncClient so all HTTP calls are non-blocking.
 """
 
 from __future__ import annotations
 
-import json
 import re
-import urllib.request
-import urllib.parse
-from tenacity import retry, stop_after_attempt, wait_exponential
+
+import httpx
 
 EDGAR_BASE       = "https://www.sec.gov"
 EFTS_SEARCH      = "https://efts.sec.gov/LATEST/search-index"
@@ -43,52 +32,46 @@ HEADERS = {
 }
 
 
-# -- HTTP helper --------------------------------------------------------------
+# -- Async HTTP helper --------------------------------------------------------
 
-def _get_json(url: str, params: dict | None = None) -> dict:
+async def _get_json(url: str, params: dict | None = None) -> dict:
     """GET request returning parsed JSON. Raises on HTTP/network errors."""
-    if params:
-        url = url + "?" + urllib.parse.urlencode(params)
-    req = urllib.request.Request(url, headers=HEADERS)
-    with urllib.request.urlopen(req, timeout=REQUEST_TIMEOUT) as r:
-        return json.loads(r.read().decode())
+    async with httpx.AsyncClient(headers=HEADERS, timeout=REQUEST_TIMEOUT) as client:
+        response = await client.get(url, params=params)
+        response.raise_for_status()
+        return response.json()
 
 
 # -- Main tool ----------------------------------------------------------------
 
 class SecEdgarTool:
 
-    @retry(stop=stop_after_attempt(3), wait=wait_exponential(min=2, max=8), reraise=True)
-    def search(self, company: str, max_results: int = MAX_RESULTS) -> str:
-        ticker = _extract_ticker(company)
+    async def search(self, company: str, max_results: int = MAX_RESULTS) -> str:
+        ticker        = _extract_ticker(company)
         company_clean = _strip_ticker(company)
-        filings = []
+        filings: list[dict] = []
 
-        # Strategy 1: ticker -> CIK -> submissions API (structured, reliable)
+        # Strategy 1: ticker → CIK → submissions API (structured, reliable)
         if ticker:
-            cik = self._ticker_to_cik(ticker)
+            cik = await self._ticker_to_cik(ticker)
             if cik:
-                filings = self._filings_from_submissions(cik, max_results)
+                filings = await self._filings_from_submissions(cik, max_results)
 
         # Strategy 2: full-text search by ticker
         if not filings and ticker:
-            filings = self._efts_search(ticker, max_results)
+            filings = await self._efts_search(ticker, max_results)
 
         # Strategy 3: full-text search by company name
         if not filings:
-            filings = self._efts_search(company_clean, max_results)
+            filings = await self._efts_search(company_clean, max_results)
 
         return _format_results(company, filings)
 
     # -- Strategy 1: Submissions API ------------------------------------------
 
-    def _ticker_to_cik(self, ticker: str) -> str:
-        """
-        Resolve ticker to zero-padded 10-digit CIK using SEC's ticker map.
-        The ticker map JSON is updated daily by the SEC.
-        """
+    async def _ticker_to_cik(self, ticker: str) -> str:
         try:
-            data = _get_json(TICKER_MAP_URL)
+            data  = await _get_json(TICKER_MAP_URL)
             upper = ticker.upper()
             for entry in data.values():
                 if str(entry.get("ticker", "")).upper() == upper:
@@ -97,15 +80,11 @@ class SecEdgarTool:
             pass
         return ""
 
-    def _filings_from_submissions(self, cik: str, max_results: int) -> list[dict]:
-        """
-        Fetch the company's filing history from data.sec.gov/submissions.
-        Returns a list of structured filing dicts with real metadata.
-        """
+    async def _filings_from_submissions(self, cik: str, max_results: int) -> list[dict]:
         try:
-            data = _get_json(f"{SUBMISSIONS_BASE}/CIK{cik}.json")
+            data         = await _get_json(f"{SUBMISSIONS_BASE}/CIK{cik}.json")
             company_name = data.get("name", "Unknown")
-            recent = data.get("filings", {}).get("recent", {})
+            recent       = data.get("filings", {}).get("recent", {})
 
             forms        = recent.get("form", [])
             dates        = recent.get("filingDate", [])
@@ -113,12 +92,12 @@ class SecEdgarTool:
             accessions   = recent.get("accessionNumber", [])
             primary_docs = recent.get("primaryDocument", [])
 
-            filings = []
+            filings: list[dict] = []
             for i, form in enumerate(forms):
                 if form not in HIGH_VALUE_FORMS:
                     continue
-                acc = accessions[i].replace("-", "") if i < len(accessions) else ""
-                doc = primary_docs[i] if i < len(primary_docs) else ""
+                acc     = accessions[i].replace("-", "")   if i < len(accessions)   else ""
+                doc     = primary_docs[i]                   if i < len(primary_docs) else ""
                 cik_int = int(cik)
                 filing_url = (
                     f"{EDGAR_BASE}/Archives/edgar/data/{cik_int}/{acc}/{doc}"
@@ -141,10 +120,9 @@ class SecEdgarTool:
 
     # -- Strategy 2/3: EFTS full-text search fallback -------------------------
 
-    def _efts_search(self, query: str, max_results: int) -> list[dict]:
-        """Full-text search fallback — broader but less structured."""
+    async def _efts_search(self, query: str, max_results: int) -> list[dict]:
         try:
-            data = _get_json(EFTS_SEARCH, {
+            data = await _get_json(EFTS_SEARCH, {
                 "q":         f'"{query}"',
                 "dateRange": "custom",
                 "startdt":   "2023-01-01",
@@ -159,16 +137,14 @@ class SecEdgarTool:
 # -- Parsers ------------------------------------------------------------------
 
 def _parse_efts_hit(hit: dict) -> dict:
-    """Parse a hit from the EDGAR EFTS full-text search index."""
     src         = hit.get("_source", {})
     file_path   = src.get("file_path", "")
     highlights  = hit.get("highlight", {}).get("file_text", [""])
     snippet     = _clean_snippet(highlights[0] if highlights else "")
 
-    # EFTS field names vary between endpoints — try both variants
-    form_type    = src.get("form_type")    or src.get("file_type",      "Unknown")
-    company_name = src.get("entity_name")  or (src.get("display_names", ["Unknown"])[0])
-    filed_at     = src.get("file_date")    or src.get("period_of_report","Unknown")
+    form_type    = src.get("form_type")   or src.get("file_type",      "Unknown")
+    company_name = src.get("entity_name") or (src.get("display_names", ["Unknown"])[0])
+    filed_at     = src.get("file_date")   or src.get("period_of_report", "Unknown")
 
     return {
         "form_type":    form_type,
@@ -225,9 +201,9 @@ def _format_results(query: str, filings: list[dict]) -> str:
 
 # -- Entry point --------------------------------------------------------------
 
-def run_sec_search(query: str) -> str:
+async def run_sec_search(query: str) -> str:
     """Called by the LangGraph SEC EDGAR node. Never raises."""
     try:
-        return SecEdgarTool().search(query)
+        return await SecEdgarTool().search(query)
     except Exception as e:
         return f"[SEC EDGAR Error] {type(e).__name__}: {e}"
