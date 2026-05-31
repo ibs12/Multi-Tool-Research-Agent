@@ -216,13 +216,23 @@ async def consensus_estimates_node(state: AgentState) -> dict:
         }
 
     ticker = ticker_match.group(1)
-    # yfinance uses requests (sync) — run in a thread to keep the event loop free
-    output  = await asyncio.to_thread(run_consensus_estimates, ticker)
-    success = not output.startswith("[Consensus Estimates Error]")
+    # Both yfinance calls are sync HTTP I/O — run concurrently in threads
+    from tools.consensus_estimates import run_historical_financials
+    consensus_out, historical_out = await asyncio.gather(
+        asyncio.to_thread(run_consensus_estimates, ticker),
+        asyncio.to_thread(run_historical_financials, ticker),
+    )
+
+    combined = consensus_out + "\n\n" + historical_out
+    # Succeed if at least one of the two fetches worked
+    success = not (
+        consensus_out.startswith("[Consensus Estimates Error]") and
+        historical_out.startswith("[Historical Financials Error]")
+    )
 
     return {
-        "tool_results":    [_build_result("consensus_estimates", ticker, output, success,
-                                          error=None if success else output)],
+        "tool_results":    [_build_result("consensus_estimates", ticker, combined, success,
+                                          error=None if success else combined)],
         "tools_called":    ["consensus_estimates"],
         "tools_remaining": _pop_tool(state, "consensus_estimates"),
     }

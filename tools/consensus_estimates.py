@@ -87,6 +87,17 @@ def _row(df, key: str) -> dict:
     return {}
 
 
+def _df_val(df, row_key: str, col) -> float | None:
+    """Safely extract a float scalar from a financial DataFrame cell."""
+    try:
+        if row_key not in df.index:
+            return None
+        fval = float(df.loc[row_key, col])
+        return None if (math.isnan(fval) or math.isinf(fval)) else fval
+    except Exception:
+        return None
+
+
 # ── Main entry point ──────────────────────────────────────────────────────────
 
 def run_consensus_estimates(ticker: str) -> str:
@@ -219,3 +230,111 @@ def run_consensus_estimates(ticker: str) -> str:
             f"[Consensus Estimates Error] Could not fetch estimates for '{ticker}': "
             f"{type(e).__name__}: {e}"
         )
+
+
+# ── Historical financials ─────────────────────────────────────────────────────
+
+def get_historical_financials(ticker: str) -> str:
+    """
+    Fetch historical annual and quarterly income statement data from Yahoo Finance.
+
+    Uses t.financials / t.income_stmt for annual (last 4 fiscal years) and
+    t.quarterly_financials / t.quarterly_income_stmt for quarterly (last 4 quarters).
+    Tries both attribute names to handle different yfinance versions gracefully.
+
+    Returns a formatted, cited string ready for injection into agent state.
+    Never raises — all failures produce a clear error string.
+    """
+    if not _HAS_YFINANCE:
+        return "[Historical Financials Error] Missing dependency: pip install yfinance"
+
+    ticker = ticker.strip().upper()
+    if not ticker:
+        return "[Historical Financials Error] Empty ticker symbol provided."
+
+    today_str   = date.today().strftime("%B %d, %Y")
+    cite_date   = date.today().strftime("%Y-%m-%d")
+    cite        = f"[Source: Yahoo Finance historical financials, retrieved {cite_date}]"
+
+    try:
+        t = yf.Ticker(ticker)
+
+        lines = [
+            f"HISTORICAL FINANCIALS for: '{ticker}'",
+            "=" * 60,
+            f"Source: Yahoo Finance | Retrieved: {today_str}",
+            "",
+        ]
+
+        # ── Annual income statement (last 4 fiscal years) ─────────────────────
+        lines.append("ANNUAL (last 4 fiscal years)")
+        fin = None
+        for attr in ("financials", "income_stmt"):
+            try:
+                df = getattr(t, attr, None)
+                if df is not None and not df.empty:
+                    fin = df
+                    break
+            except Exception:
+                continue
+
+        if fin is not None and not fin.empty:
+            # sorted() on pd.Timestamp columns gives ascending (oldest first);
+            # take the last 4 entries = the 4 most recent fiscal years.
+            annual_cols = sorted(fin.columns)[-4:]
+            for col in annual_cols:
+                fy      = f"FY{col.year}"
+                rev     = _safe_rev(_df_val(fin, "Total Revenue", col))
+                ni      = _safe_rev(_df_val(fin, "Net Income", col))
+                rev_v   = _df_val(fin, "Total Revenue", col)
+                gp_v    = _df_val(fin, "Gross Profit", col)
+                if rev_v and gp_v and rev_v != 0:
+                    gm  = f"{(gp_v / rev_v) * 100:.1f}%"
+                else:
+                    gm  = "Not available"
+                lines.append(
+                    f"  {fy}: Revenue {rev} | Net Income {ni} | Gross Margin {gm} {cite}"
+                )
+        else:
+            lines.append("  Not available — no annual income statement data returned.")
+
+        lines.append("")
+
+        # ── Quarterly income statement (last 4 quarters) ──────────────────────
+        lines.append("QUARTERLY (last 4 quarters)")
+        qfin = None
+        for attr in ("quarterly_financials", "quarterly_income_stmt"):
+            try:
+                df = getattr(t, attr, None)
+                if df is not None and not df.empty:
+                    qfin = df
+                    break
+            except Exception:
+                continue
+
+        if qfin is not None and not qfin.empty:
+            quarterly_cols = sorted(qfin.columns)[-4:]
+            for col in quarterly_cols:
+                q  = (col.month - 1) // 3 + 1
+                ql = f"Q{q} {col.year}"
+                rev = _safe_rev(_df_val(qfin, "Total Revenue", col))
+                ni  = _safe_rev(_df_val(qfin, "Net Income", col))
+                lines.append(f"  {ql}: Revenue {rev} | Net Income {ni} {cite}")
+        else:
+            lines.append("  Not available — no quarterly income statement data returned.")
+
+        return "\n".join(lines)
+
+    except Exception as e:
+        return (
+            f"[Historical Financials Error] Could not fetch historical data for '{ticker}': "
+            f"{type(e).__name__}: {e}"
+        )
+
+
+def run_historical_financials(ticker: str) -> str:
+    """Top-level entry point. Never raises."""
+    try:
+        return get_historical_financials(ticker)
+    except Exception as e:
+        return f"[Historical Financials Error] {type(e).__name__}: {e}"

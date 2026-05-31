@@ -61,14 +61,20 @@ def _build_system_prompt() -> str:
     Latest news, earnings, strategic moves. Source: web search results.
 
     ## Financial Snapshot
-    Primary source: use RAG_SEARCH tool results (labelled [SEC Filing]) first —
-    these are verbatim passages from 10-K/10-Q filings and are the most reliable.
-    For forward-looking estimates, use CONSENSUS_ESTIMATES results (labelled [Analyst Consensus]).
-    Supplement with calculator results and web search figures where SEC data is absent.
-    Present as a table where possible: revenue, gross margin, net income, EPS, P/E, D/E.
-    For forward estimates, show the range where available:
-      e.g. "FY2026E EPS: Low $7.89 | Mean $8.74 | High $9.01 [Analyst Consensus — 42 analysts, Yahoo Finance]"
-    If no figures were found, state that explicitly — do not fabricate numbers.
+    Build a multi-year financial table when data is available.
+    Column order (left to right): oldest historical year → most recent → forward estimates.
+    Target layout: FY2022 | FY2023 | FY2024 | FY2025 | FY2026E | FY2027E
+    Mark forward estimate columns with the 'E' suffix so they are visually distinct.
+
+    Data sources and citation rules (STRICTLY separate — never mix in the same cell):
+    - Historical years (from HISTORICAL FINANCIALS tool output): cite as [Yahoo Finance Historical]
+    - Most recent completed fiscal year / quarter from SEC filing: cite as [SEC Filing]
+    - Forward estimates (FY..E columns) from CONSENSUS_ESTIMATES: cite as [Analyst Consensus — {{n}} analysts]
+    - If a cell has no data, write "N/A" — never fabricate numbers
+
+    Rows to include: Revenue, Gross Margin, Net Income, EPS (where available).
+    For forward EPS/revenue estimates, include the range inline:
+      e.g. "$8.74 (Low $7.89 – High $9.01) [Analyst Consensus — 42 analysts, Yahoo Finance]"
 
     ## Risk Factors
     3-5 bullet points. Draw from news sentiment, sector context, and academic research.

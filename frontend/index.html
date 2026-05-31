@@ -723,6 +723,17 @@
       height: 280px;
     }
 
+    .chart-footnote {
+      font-family: var(--mono);
+      font-size: 8.5px;
+      color: var(--text-dim);
+      margin-top: 10px;
+      padding-top: 8px;
+      border-top: 1px solid var(--border);
+      line-height: 1.6;
+      letter-spacing: 0.02em;
+    }
+
     /* ── Streaming pre-render ──────────────────────────────────────── */
     .markdown-body.streaming {
       font-family: var(--mono);
@@ -1458,6 +1469,18 @@
       canvas.id = `fin-chart-${idx}-${Date.now()}`;
       wrap.appendChild(canvas);
       block.appendChild(wrap);
+
+      // ── Footnote ────────────────────────────────────────────────────
+      const foot = document.createElement('div');
+      foot.className = 'chart-footnote';
+      const analystMatch = contentEl ? contentEl.textContent.match(/(\d{1,3})\s+analysts/i) : null;
+      const analystStr = analystMatch ? ` (${analystMatch[1]} analysts)` : '';
+      foot.textContent =
+        `Historical data: Yahoo Finance | Current period: SEC Filing | ` +
+        `Forward estimates: Analyst Consensus${analystStr} | ` +
+        `All figures subject to restatement`;
+      block.appendChild(foot);
+
       section.appendChild(block);
     });
 
