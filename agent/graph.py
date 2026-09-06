@@ -93,6 +93,11 @@ async def async_tool_dispatcher(state: AgentState) -> dict:
             continue
         merged["tool_results"].extend(output.get("tool_results", []))
         merged["tools_called"].extend(output.get("tools_called", []))
+        # Structured payloads a tool node attaches alongside its text output
+        # (e.g. the consensus forecast) — merged only when actually produced,
+        # so a later empty run never wipes an earlier one.
+        if output.get("forecast"):
+            merged["forecast"] = output["forecast"]
 
     return merged
 

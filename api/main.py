@@ -11,6 +11,7 @@ Endpoints:
 
 SSE event types:
   node_complete   — a graph node finished  {"event","node","data"}
+  forecast        — structured outlook     {"event","data": {...}}
   report_chunk    — one synthesis token    {"event","data": "<text>"}
   report          — full final report      {"event","data": "<markdown>"}
   error           — something went wrong   {"event","data": "<message>"}
@@ -98,6 +99,7 @@ class ResearchResponse(BaseModel):
     iteration_count: int
     elapsed_seconds: float
     error: str | None
+    forecast: dict | None = None
 
 
 # ── Health ────────────────────────────────────────────────────────────────────
@@ -129,6 +131,7 @@ def research(req: ResearchRequest):
         iteration_count=result.get("iteration_count", 0),
         elapsed_seconds=round(time.time() - start, 2),
         error=synthesis.get("error"),
+        forecast=result.get("forecast"),
     )
 
 
@@ -185,6 +188,13 @@ async def _stream_generator(req: ResearchRequest) -> AsyncGenerator[str, None]:
         # stream_synthesis() wraps the Anthropic sync streaming SDK, so it
         # must run in a thread.  thread_queue.Queue + asyncio.to_thread bridges
         # the blocking q.get() back to the async generator.
+        # Structured forecast: sent before synthesis so the chart data is in the
+        # browser by the time the report renders.
+        forecast = final_state.get("forecast")
+        if forecast:
+            yield _sse({"event": "forecast", "data": forecast})
+            await asyncio.sleep(0)
+
         yield _sse({"event": "node_complete", "node": "synthesis", "data": {"streaming": True}})
         await asyncio.sleep(0)
 

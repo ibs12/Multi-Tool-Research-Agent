@@ -216,11 +216,14 @@ async def consensus_estimates_node(state: AgentState) -> dict:
         }
 
     ticker = ticker_match.group(1)
-    # Both yfinance calls are sync HTTP I/O — run concurrently in threads
-    from tools.consensus_estimates import run_historical_financials
-    consensus_out, historical_out = await asyncio.gather(
+    # All three yfinance calls are sync HTTP I/O — run concurrently in threads.
+    # build_quarterly_outlook returns structured data for the forecast chart
+    # rather than prose for the report.
+    from tools.consensus_estimates import build_quarterly_outlook, run_historical_financials
+    consensus_out, historical_out, outlook = await asyncio.gather(
         asyncio.to_thread(run_consensus_estimates, ticker),
         asyncio.to_thread(run_historical_financials, ticker),
+        asyncio.to_thread(build_quarterly_outlook, ticker),
     )
 
     combined = consensus_out + "\n\n" + historical_out
@@ -235,4 +238,5 @@ async def consensus_estimates_node(state: AgentState) -> dict:
                                           error=None if success else combined)],
         "tools_called":    ["consensus_estimates"],
         "tools_remaining": _pop_tool(state, "consensus_estimates"),
+        "forecast":        outlook,
     }

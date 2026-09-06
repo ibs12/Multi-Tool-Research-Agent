@@ -81,6 +81,10 @@ class AgentState(TypedDict):
     # Accumulated financial intelligence
     financial_context: FinancialContext
 
+    # Structured rest-of-year forecast (charted directly by the frontend,
+    # never routed through the LLM) — None when consensus data is unavailable
+    forecast: dict[str, Any] | None
+
     # Final output
     final_report: str
     error: str | None
@@ -104,6 +108,7 @@ def make_initial_state(query: str, max_iterations: int = 8) -> dict[str, Any]:
         "tools_called": [],
         "tools_remaining": [],
         "financial_context": {},
+        "forecast": None,
         "final_report": "",
         "error": None,
     }

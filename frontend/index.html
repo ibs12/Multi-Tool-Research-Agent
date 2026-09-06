@@ -734,6 +734,155 @@
       letter-spacing: 0.02em;
     }
 
+    /* ── Forward outlook: fiscal-year path bar ─────────────────────── */
+    .fy-path { margin-top: 16px; }
+
+    .fy-path-head {
+      display: flex;
+      align-items: baseline;
+      justify-content: space-between;
+      gap: 12px;
+      margin-bottom: 7px;
+    }
+
+    .fy-path-title {
+      font-family: var(--mono);
+      font-size: 9px;
+      font-weight: 600;
+      letter-spacing: 0.14em;
+      color: var(--text-secondary);
+      text-transform: uppercase;
+    }
+
+    .fy-path-total {
+      font-family: var(--mono);
+      font-size: 9px;
+      color: var(--text-secondary);
+      text-align: right;
+    }
+
+    .fy-path-bar {
+      position: relative;
+      display: flex;
+      height: 30px;
+      background: rgba(255,255,255,0.02);
+      border-radius: 3px;
+    }
+
+    .fy-seg {
+      height: 100%;
+      border-radius: 3px;
+      min-width: 2px;
+    }
+    .fy-seg + .fy-seg { margin-left: 2px; }   /* surface gap between segments */
+
+    .fy-seg-actual  { background: linear-gradient(180deg, #f5a623, #c8841a); }
+    .fy-seg-est     {
+      background: rgba(245,166,35,0.30);
+      border: 1px dashed rgba(245,166,35,0.65);
+    }
+    .fy-seg-balance {
+      background: rgba(245,166,35,0.12);
+      border: 1px dotted rgba(245,166,35,0.4);
+    }
+
+    /* Full-year consensus envelope drawn over the quarterly path */
+    .fy-band {
+      position: absolute;
+      top: -5px;
+      bottom: -5px;
+      background: rgba(232,237,245,0.07);
+      border-left:  1px dashed rgba(232,237,245,0.3);
+      border-right: 1px dashed rgba(232,237,245,0.3);
+      pointer-events: none;
+    }
+
+    .fy-mark {
+      position: absolute;
+      top: -7px;
+      bottom: -7px;
+      width: 2px;
+      background: var(--text-primary);
+      pointer-events: none;
+    }
+
+    .fy-key {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 4px 16px;
+      margin-top: 12px;
+      font-family: var(--mono);
+      font-size: 9px;
+      color: var(--text-secondary);
+    }
+
+    .fy-key-item b {
+      font-weight: 500;
+      color: var(--text-primary);
+    }
+
+    .fy-note {
+      font-family: var(--mono);
+      font-size: 8.5px;
+      color: var(--text-dim);
+      margin-top: 8px;
+      line-height: 1.6;
+    }
+
+    /* ── Forward outlook: forecast drivers ─────────────────────────── */
+    .drivers-title {
+      font-family: var(--mono);
+      font-size: 9px;
+      font-weight: 600;
+      letter-spacing: 0.14em;
+      color: var(--text-secondary);
+      text-transform: uppercase;
+      margin: 20px 0 10px;
+      padding-top: 14px;
+      border-top: 1px solid var(--border);
+    }
+
+    .forecast-drivers {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+      gap: 10px;
+    }
+
+    .driver {
+      background: rgba(255,255,255,0.02);
+      border: 1px solid var(--border);
+      border-radius: 4px;
+      padding: 9px 11px 10px;
+    }
+
+    .driver-label {
+      font-family: var(--mono);
+      font-size: 8px;
+      letter-spacing: 0.1em;
+      text-transform: uppercase;
+      color: var(--text-dim);
+      margin-bottom: 4px;
+    }
+
+    .driver-value {
+      font-family: var(--mono);
+      font-size: 13px;
+      font-weight: 500;
+      color: var(--text-primary);
+      line-height: 1.2;
+    }
+
+    .driver-value.pos { color: var(--green); }
+    .driver-value.neg { color: var(--red); }
+
+    .driver-detail {
+      font-family: var(--mono);
+      font-size: 8.5px;
+      color: var(--text-secondary);
+      line-height: 1.5;
+      margin-top: 5px;
+    }
+
     /* ── Chart metric tabs ─────────────────────────────────────────── */
     .chart-tabs {
       display: flex;
@@ -1020,6 +1169,7 @@
   // ── State ───────────────────────────────────────────────────────────
   let currentReport = '';
   let reportBuffer = '';
+  let currentForecast = null;   // structured outlook from the `forecast` SSE event
   let startTime = null;
   let timerInterval = null;
 
@@ -1127,6 +1277,24 @@
     for (let j = i - 1; j >= 0; j--) if (periodParts(labels[j]).quarter === cur.quarter) return j;
     for (let j = i - 1; j >= 0; j--) if (periodParts(labels[j]).quarter !== null) return j;
     return -1;
+  }
+
+  // Charts live between the financial section and Risk Factors; fall back to
+  // appending when the report doesn't use the expected headings.
+  function insertChartSection(contentEl, section) {
+    let insertBefore = null;
+    const headings = Array.from(contentEl.querySelectorAll('h2'));
+    for (const h of headings) {
+      if (/risk/i.test(h.textContent)) { insertBefore = h; break; }
+    }
+    if (!insertBefore) {
+      const finH2 = headings.find(h => /financial/i.test(h.textContent));
+      if (finH2) {
+        const i = headings.indexOf(finH2);
+        if (i < headings.length - 1) insertBefore = headings[i + 1];
+      }
+    }
+    insertBefore ? contentEl.insertBefore(section, insertBefore) : contentEl.appendChild(section);
   }
 
   function extractChartsFromTable(table) {
@@ -1715,20 +1883,7 @@
       section.appendChild(block);
     });
 
-    // Insert before Risk h2 / after Financial h2 / append
-    let insertBefore = null;
-    const headings = Array.from(contentEl.querySelectorAll('h2'));
-    for (const h of headings) {
-      if (/risk/i.test(h.textContent)) { insertBefore = h; break; }
-    }
-    if (!insertBefore) {
-      const finH2 = headings.find(h => /financial/i.test(h.textContent));
-      if (finH2) {
-        const i = headings.indexOf(finH2);
-        if (i < headings.length - 1) insertBefore = headings[i + 1];
-      }
-    }
-    insertBefore ? contentEl.insertBefore(section, insertBefore) : contentEl.appendChild(section);
+    insertChartSection(contentEl, section);
 
     // Render all charts (canvases are in DOM order: all metrics of block 0, then block 1, …)
     const allCanvases = Array.from(section.querySelectorAll('canvas'));
@@ -1740,6 +1895,425 @@
         blk.isGrouped ? renderGroupedChart(canvas, cd) : renderBarChart(canvas, cd);
       });
     });
+  }
+
+  // ── Forward outlook ──────────────────────────────────────────────────
+  // Driven by the structured `forecast` payload from the API, not by parsing
+  // the report markdown: every figure here is the number Yahoo returned.
+
+  let forecastChartsRendered = 0;
+
+  function fmtMoney(v, m, cur) {
+    if (v == null) return '—';
+    const sym = cur === 'USD' ? '$' : cur === 'EUR' ? '€' : cur === 'GBP' ? '£' : (cur ? cur + ' ' : '');
+    const scaled = v / (m.scale || 1);
+    return `${sym}${scaled.toFixed(m.decimals != null ? m.decimals : 2)}${m.unit || ''}`;
+  }
+
+  function fmtPct(frac, digits) {
+    if (frac == null) return '—';
+    return `${frac >= 0 ? '+' : ''}${(frac * 100).toFixed(digits == null ? 1 : digits)}%`;
+  }
+
+  // Bars + low/high whiskers + YoY badges for one metric's quarterly series.
+  function makeForecastOverlayPlugin(points, fmt) {
+    return {
+      afterDatasetsDraw(chart) {
+        const meta = chart.getDatasetMeta(0);
+        const { ctx, chartArea, scales } = chart;
+        if (!meta || !chartArea || !scales.y) return;
+        const y = scales.y;
+
+        ctx.save();
+        meta.data.forEach((bar, i) => {
+          const p = points[i];
+          if (!p) return;
+          let topY = bar.y;
+
+          // Consensus range: analysts' low-to-high on estimated quarters only
+          if (p.low != null && p.high != null) {
+            const yLow  = y.getPixelForValue(p.low);
+            const yHigh = y.getPixelForValue(p.high);
+            const cap   = Math.min(9, Math.max(5, bar.width * 0.22));
+            ctx.strokeStyle = 'rgba(245,166,35,0.85)';
+            ctx.lineWidth = 1.25;
+            ctx.beginPath();
+            ctx.moveTo(bar.x, yHigh); ctx.lineTo(bar.x, yLow);
+            ctx.moveTo(bar.x - cap, yHigh); ctx.lineTo(bar.x + cap, yHigh);
+            ctx.moveTo(bar.x - cap, yLow);  ctx.lineTo(bar.x + cap, yLow);
+            ctx.stroke();
+            topY = Math.min(topY, yHigh);
+          }
+
+          // Value label, lifted above the whisker so the two never overlap
+          ctx.font = '500 10px "IBM Plex Mono"';
+          ctx.textAlign = 'center';
+          ctx.textBaseline = 'bottom';
+          ctx.fillStyle = p.kind === 'estimate' ? 'rgba(245,166,35,0.85)' : '#e8edf5';
+          ctx.fillText(fmt(p.value) + (p.kind === 'estimate' ? 'E' : ''), bar.x, topY - 4);
+
+          // YoY badge — always against the same quarter a year earlier
+          if (p.yoy == null) return;
+          const text = fmtPct(p.yoy);
+          const isPos = p.yoy >= 0;
+          ctx.font = '500 9px "IBM Plex Mono"';
+          const bw = ctx.measureText(text).width + 10, bh = 14;
+          const bx = bar.x - bw / 2, by = topY - 32;
+          if (by < chartArea.top) return;
+          ctx.fillStyle = isPos ? 'rgba(0,208,132,0.18)' : 'rgba(255,71,87,0.18)';
+          const r = 2;
+          ctx.beginPath();
+          ctx.moveTo(bx + r, by); ctx.lineTo(bx + bw - r, by);
+          ctx.quadraticCurveTo(bx + bw, by, bx + bw, by + r);
+          ctx.lineTo(bx + bw, by + bh - r);
+          ctx.quadraticCurveTo(bx + bw, by + bh, bx + bw - r, by + bh);
+          ctx.lineTo(bx + r, by + bh);
+          ctx.quadraticCurveTo(bx, by + bh, bx, by + bh - r);
+          ctx.lineTo(bx, by + r);
+          ctx.quadraticCurveTo(bx, by, bx + r, by);
+          ctx.closePath();
+          ctx.fill();
+          ctx.fillStyle = isPos ? '#00d084' : '#ff4757';
+          ctx.textAlign = 'center';
+          ctx.textBaseline = 'middle';
+          ctx.fillText(text, bar.x, by + bh / 2);
+        });
+        ctx.restore();
+      }
+    };
+  }
+
+  function renderForecastChart(canvas, metric, currency) {
+    const scale = metric.scale || 1;
+    const fmt   = v => fmtMoney(v * scale, metric, currency);
+
+    // Everything is charted in display units so the whiskers share the y-scale
+    const points = metric.quarters.map(q => ({
+      kind:  q.kind,
+      value: q.value / scale,
+      low:   q.low  != null ? q.low  / scale : null,
+      high:  q.high != null ? q.high / scale : null,
+      yoy:   q.yoy != null ? q.yoy : null,
+      analysts: q.analysts,
+      year_ago: q.year_ago != null ? q.year_ago / scale : null,
+    }));
+
+    // Reported quarters get a YoY badge when the year-ago quarter is on-chart
+    const labels = metric.quarters.map(q => q.label);
+    points.forEach((p, i) => {
+      if (p.kind !== 'actual' || p.yoy != null) return;
+      const j = previousComparableIndex(labels, i);
+      if (j >= 0 && points[j].value) p.yoy = (p.value - points[j].value) / Math.abs(points[j].value);
+    });
+
+    const instance = new Chart(canvas, {
+      type: 'bar',
+      data: {
+        labels,
+        datasets: [{
+          data: points.map(p => +p.value.toFixed(4)),
+          backgroundColor(ctx) {
+            const { ctx: c, chartArea } = ctx.chart;
+            if (!chartArea) return '#f5a623';
+            if (points[ctx.dataIndex].kind === 'estimate') return 'rgba(245,166,35,0.30)';
+            const g = c.createLinearGradient(0, chartArea.top, 0, chartArea.bottom);
+            g.addColorStop(0, '#f5a623');
+            g.addColorStop(1, '#c8841a');
+            return g;
+          },
+          borderColor: points.map(p => p.kind === 'estimate' ? 'rgba(245,166,35,0.75)' : 'transparent'),
+          borderWidth: points.map(p => p.kind === 'estimate' ? 1.5 : 0),
+          borderRadius: 3,
+          borderSkipped: 'bottom',
+        }]
+      },
+      options: {
+        responsive: true,
+        maintainAspectRatio: false,
+        layout: { padding: { top: 44 } },
+        plugins: {
+          legend: { display: false },
+          tooltip: {
+            backgroundColor: '#0a0c0f',
+            borderColor: '#1e2a3a',
+            borderWidth: 1,
+            titleColor: '#7a8fa8',
+            bodyColor: '#e8edf5',
+            titleFont: { family: 'IBM Plex Mono', size: 10 },
+            bodyFont: { family: 'IBM Plex Mono', size: 11 },
+            callbacks: {
+              label(ctx) {
+                const p = points[ctx.dataIndex];
+                return p.kind === 'estimate'
+                  ? `  Consensus ${fmt(p.value)}`
+                  : `  Reported ${fmt(p.value)}`;
+              },
+              afterBody(items) {
+                const p = points[items[0].dataIndex];
+                const out = [];
+                if (p.low != null && p.high != null) {
+                  out.push(`  Range ${fmt(p.low)} – ${fmt(p.high)}`);
+                }
+                if (p.analysts) out.push(`  ${p.analysts} analysts`);
+                if (p.year_ago != null) out.push(`  Year ago ${fmt(p.year_ago)}`);
+                if (p.yoy != null) out.push(`  ${fmtPct(p.yoy)} YoY`);
+                return out;
+              }
+            }
+          }
+        },
+        scales: {
+          x: {
+            grid: { color: '#1e2a3a', lineWidth: 0.5 },
+            border: { display: false },
+            ticks: {
+              color: '#7a8fa8',
+              font: { family: 'IBM Plex Mono', size: 10 },
+              callback(v, i) { return labels[i] + (points[i].kind === 'estimate' ? 'E' : ''); },
+            },
+          },
+          y: {
+            beginAtZero: true,
+            grid: { color: '#1e2a3a', lineWidth: 0.5 },
+            border: { display: false },
+            ticks: {
+              color: '#7a8fa8',
+              font: { family: 'IBM Plex Mono', size: 10 },
+              callback: v => fmt(v),
+            }
+          }
+        },
+        animation: { duration: 700, easing: 'easeOutQuart' },
+      },
+      plugins: [makeForecastOverlayPlugin(points, fmt)]
+    });
+    chartInstances.push(instance);
+  }
+
+  // Horizontal build-up of the fiscal year: reported quarters, then the
+  // quarters still to come, measured against the full-year consensus band.
+  function buildFyPath(metric, currency, fyLabel) {
+    const fy = metric.fy;
+    const ytd = metric.ytd && metric.ytd.value;
+    if (ytd == null || !fy) return null;
+
+    const fwdQuarters = metric.quarters.filter(
+      q => q.kind === 'estimate' && (metric.forecast.labels || []).includes(q.label));
+    const fwdTotal = metric.forecast.value || 0;
+    const balance  = metric.balance;
+    const pathTotal = ytd + fwdTotal + (metric.uncovered_quarters > 0 && balance > 0 ? balance : 0);
+    const axisMax  = Math.max(pathTotal, fy.high || 0, fy.value) * 1.04;
+    const pct = v => Math.max(0, (v / axisMax) * 100);
+
+    const wrap = document.createElement('div');
+    wrap.className = 'fy-path';
+
+    const head = document.createElement('div');
+    head.className = 'fy-path-head';
+    const gapPct = fy.value ? ((ytd + fwdTotal - fy.value) / Math.abs(fy.value)) * 100 : null;
+    head.innerHTML =
+      `<span class="fy-path-title">${fyLabel} path — reported + rest of year</span>` +
+      `<span class="fy-path-total">${fmtMoney(ytd + fwdTotal, metric, currency)} tracked ` +
+      `vs ${fmtMoney(fy.value, metric, currency)} full-year consensus</span>`;
+    wrap.appendChild(head);
+
+    const bar = document.createElement('div');
+    bar.className = 'fy-path-bar';
+
+    const seg = (cls, value, title) => {
+      const d = document.createElement('div');
+      d.className = `fy-seg ${cls}`;
+      d.style.width = pct(value) + '%';
+      d.title = title;
+      return d;
+    };
+
+    bar.appendChild(seg('fy-seg-actual', ytd,
+      `Reported: ${(metric.ytd.labels || []).join(', ')} = ${fmtMoney(ytd, metric, currency)}`));
+    fwdQuarters.forEach(q => {
+      bar.appendChild(seg('fy-seg-est', q.value,
+        `${q.label} consensus ${fmtMoney(q.value, metric, currency)}` +
+        (q.low != null ? ` (${fmtMoney(q.low, metric, currency)} – ${fmtMoney(q.high, metric, currency)})` : '') +
+        (q.analysts ? `, ${q.analysts} analysts` : '')));
+    });
+    if (metric.uncovered_quarters > 0 && balance > 0) {
+      bar.appendChild(seg('fy-seg-balance', balance,
+        `${metric.uncovered_quarters} further quarter(s) not individually forecast — ` +
+        `${fmtMoney(balance, metric, currency)} implied by the full-year consensus`));
+    }
+
+    // Full-year consensus envelope overlaid on the same scale
+    if (fy.low != null && fy.high != null) {
+      const band = document.createElement('div');
+      band.className = 'fy-band';
+      band.style.left  = pct(fy.low) + '%';
+      band.style.width = Math.max(0.4, pct(fy.high) - pct(fy.low)) + '%';
+      bar.appendChild(band);
+    }
+    const mark = document.createElement('div');
+    mark.className = 'fy-mark';
+    mark.style.left = pct(fy.value) + '%';
+    mark.title = `${fy.label} consensus mean ${fmtMoney(fy.value, metric, currency)}`;
+    bar.appendChild(mark);
+    wrap.appendChild(bar);
+
+    const key = document.createElement('div');
+    key.className = 'fy-key';
+    const items = [
+      `<span class="fy-key-item">Reported ${(metric.ytd.labels || []).length}Q: <b>${fmtMoney(ytd, metric, currency)}</b></span>`,
+      `<span class="fy-key-item">Rest of year (consensus): <b>${fmtMoney(fwdTotal, metric, currency)}</b></span>`,
+      `<span class="fy-key-item">${fy.label} consensus: <b>${fmtMoney(fy.value, metric, currency)}</b>` +
+        (fy.low != null ? ` (${fmtMoney(fy.low, metric, currency)} – ${fmtMoney(fy.high, metric, currency)})` : '') + `</span>`,
+    ];
+    if (fy.yoy != null) items.push(`<span class="fy-key-item">Implied YoY: <b>${fmtPct(fy.yoy)}</b></span>`);
+    if (metric.run_rate) {
+      const vs = (fy.value - metric.run_rate) / Math.abs(metric.run_rate);
+      items.push(`<span class="fy-key-item">vs trailing 4Q run-rate: <b>${fmtPct(vs)}</b></span>`);
+    }
+    key.innerHTML = items.join('');
+    wrap.appendChild(key);
+
+    const notes = [];
+    if (metric.uncovered_quarters > 0) {
+      notes.push(
+        `${metric.uncovered_quarters} quarter(s) of ${fyLabel} carry no individual consensus — ` +
+        `shown as the balance implied by the full-year figure.`);
+    } else if (gapPct != null && Math.abs(gapPct) >= 0.05) {
+      notes.push(
+        `Quarterly estimates sum ${gapPct >= 0 ? 'above' : 'below'} the full-year consensus by ` +
+        `${Math.abs(gapPct).toFixed(1)}% — analysts' quarterly and annual models differ slightly.`);
+    }
+    if (notes.length) {
+      const n = document.createElement('div');
+      n.className = 'fy-note';
+      n.textContent = notes.join(' ');
+      wrap.appendChild(n);
+    }
+    return wrap;
+  }
+
+  function renderForecastSection(contentEl, fc) {
+    if (!fc || !Array.isArray(fc.metrics) || !fc.metrics.length) return;
+    const metrics = fc.metrics.filter(m => m.quarters && m.quarters.some(q => q.kind === 'estimate'));
+    if (!metrics.length) return;
+
+    const cur     = fc.currency || 'USD';
+    const fyLabel = (fc.fy_label || '').replace(/E$/, '') || 'the fiscal year';
+
+    const section = document.createElement('div');
+    section.className = 'chart-section';
+
+    const block = document.createElement('div');
+    block.className = 'chart-block';
+
+    const hdr = document.createElement('div');
+    hdr.className = 'chart-header';
+    hdr.innerHTML =
+      `<div class="chart-block-title">Forward Outlook — ${fyLabel}</div>` +
+      `<div class="chart-source-badge badge-yahoo">Consensus</div>`;
+    block.appendChild(hdr);
+
+    const primary  = metrics[0];
+    const fyAnalysts = primary.fy && primary.fy.analysts;
+    const sub = document.createElement('div');
+    sub.className = 'chart-source-subtitle';
+    sub.textContent =
+      `Reported quarters plus analyst consensus for the remainder of ${fyLabel}` +
+      (fyAnalysts ? ` — ${fyAnalysts} analysts on the full year` : '') +
+      ` | Yahoo Finance, retrieved ${fc.as_of}`;
+    block.appendChild(sub);
+
+    const leg = document.createElement('div');
+    leg.className = 'chart-legend';
+    leg.innerHTML =
+      '<span class="legend-actual">■ Reported</span>' +
+      '<span class="legend-estimate">▪ Consensus estimate</span>' +
+      '<span style="color:rgba(245,166,35,0.85)">├ Analyst low–high</span>' +
+      '<span style="color:var(--text-primary)">│ Full-year consensus</span>';
+    block.appendChild(leg);
+
+    // Tabs when more than one metric has a forecast (Revenue / EPS)
+    const wraps = [];
+    const stamp = Date.now();
+    let tabBtns = [];
+    if (metrics.length > 1) {
+      const tabRow = document.createElement('div');
+      tabRow.className = 'chart-tabs';
+      metrics.forEach((m, i) => {
+        const btn = document.createElement('button');
+        btn.className = 'chart-tab' + (i === 0 ? ' active' : '');
+        btn.textContent = m.label;
+        tabRow.appendChild(btn);
+        tabBtns.push(btn);
+      });
+      block.appendChild(tabRow);
+    }
+
+    metrics.forEach((m, i) => {
+      const pane = document.createElement('div');
+      if (i !== 0) pane.style.display = 'none';
+
+      const cw = document.createElement('div');
+      cw.className = 'chart-canvas-wrap';
+      const canvas = document.createElement('canvas');
+      canvas.id = `forecast-chart-${forecastChartsRendered++}-${stamp}`;
+      cw.appendChild(canvas);
+      pane.appendChild(cw);
+
+      const path = buildFyPath(m, cur, fyLabel);
+      if (path) pane.appendChild(path);
+
+      block.appendChild(pane);
+      wraps.push({ pane, canvas, metric: m });
+    });
+
+    tabBtns.forEach((btn, i) => {
+      btn.addEventListener('click', () => {
+        tabBtns.forEach((t, j) => t.classList.toggle('active', i === j));
+        wraps.forEach((w, j) => { w.pane.style.display = i === j ? 'block' : 'none'; });
+      });
+    });
+
+    // ── What the forecast rests on ───────────────────────────────────
+    if (Array.isArray(fc.drivers) && fc.drivers.length) {
+      const dt = document.createElement('div');
+      dt.className = 'drivers-title';
+      dt.textContent = 'What this forecast rests on';
+      block.appendChild(dt);
+
+      const grid = document.createElement('div');
+      grid.className = 'forecast-drivers';
+      fc.drivers.forEach(d => {
+        const el = document.createElement('div');
+        el.className = 'driver';
+        // Green/red only where the sign means growth — a model-reconciliation
+        // gap is neither good nor bad, so it stays in neutral ink.
+        const signed = d.tone === 'growth' && /^[+-]/.test(d.value || '');
+        const cls = signed ? (d.value.startsWith('+') ? ' pos' : ' neg') : '';
+        el.innerHTML =
+          `<div class="driver-label"></div><div class="driver-value${cls}"></div>` +
+          `<div class="driver-detail"></div>`;
+        el.querySelector('.driver-label').textContent  = d.label || '';
+        el.querySelector('.driver-value').textContent  = d.value || '';
+        el.querySelector('.driver-detail').textContent = d.detail || '';
+        grid.appendChild(el);
+      });
+      block.appendChild(grid);
+    }
+
+    const foot = document.createElement('div');
+    foot.className = 'chart-footnote';
+    foot.textContent =
+      `Reported quarters: Yahoo Finance income statement and earnings history | ` +
+      `Forward quarters and full-year figures: analyst consensus, Yahoo Finance | ` +
+      `EPS is on the adjusted basis analysts estimate against, not GAAP diluted EPS | ` +
+      `Estimates are forecasts, not outcomes — the low–high range is the spread of contributing analysts`;
+    block.appendChild(foot);
+
+    section.appendChild(block);
+    insertChartSection(contentEl, section);
+
+    wraps.forEach(w => renderForecastChart(w.canvas, w.metric, cur));
   }
 
   // ── Financial table post-processor ───────────────────────────────────
@@ -1870,6 +2444,7 @@
     // Order matters: chart extraction reads clean textContent;
     // post-processor adds superscripts to innerHTML after extraction.
     renderFinancialCharts(content);
+    renderForecastSection(content, currentForecast);
     postProcessFinancialTables(content);
 
     // Colour verdict
@@ -1927,6 +2502,7 @@
     setLoading(true);
     currentReport = '';
     reportBuffer = '';
+    currentForecast = null;
 
     log('system', '▶', `Starting research: "${query.substring(0, 60)}..."`);
 
@@ -2013,6 +2589,15 @@
                 ok && data.preview ? data.preview.substring(0, 100) : ''
               );
             }
+          }
+
+          else if (event === 'forecast') {
+            currentForecast = data;
+            const nQ = (data.metrics || []).reduce(
+              (n, m) => n + (m.quarters || []).filter(q => q.kind === 'estimate').length, 0);
+            log('tool', '📈',
+              `Forward outlook ready — ${data.fy_label || ''} consensus`,
+              `${nQ} forecast quarter(s) across ${(data.metrics || []).length} metric(s)`);
           }
 
           else if (event === 'report_chunk') {
