@@ -1103,6 +1103,32 @@
     return /\bq[1-4]\b/i.test(label);      // any Q[1-4] label that isn't an estimate
   }
 
+  // ── Period granularity ───────────────────────────────────────────
+  // A quarterly bar (Q2 FY2026) covers three months, so it must never be
+  // compared against — or trend-lined into — a full-year bar.
+  function periodParts(label) {
+    const clean = String(label).replace(/[¹²³⁴]/g, '').trim();
+    const q = clean.match(/\bq([1-4])\b/i);
+    const y = clean.match(/\b(20\d{2})\b/);
+    return { quarter: q ? parseInt(q[1]) : null, year: y ? parseInt(y[1]) : null };
+  }
+
+  function isQuarterlyPeriod(label) { return periodParts(label).quarter !== null; }
+
+  // Index of the most recent earlier period covering the same span of time:
+  // annual → previous annual; quarterly → same quarter a year back (YoY),
+  // falling back to the previous quarter (QoQ). -1 when nothing is comparable.
+  function previousComparableIndex(labels, i) {
+    const cur = periodParts(labels[i]);
+    if (cur.quarter === null) {
+      for (let j = i - 1; j >= 0; j--) if (periodParts(labels[j]).quarter === null) return j;
+      return -1;
+    }
+    for (let j = i - 1; j >= 0; j--) if (periodParts(labels[j]).quarter === cur.quarter) return j;
+    for (let j = i - 1; j >= 0; j--) if (periodParts(labels[j]).quarter !== null) return j;
+    return -1;
+  }
+
   function extractChartsFromTable(table) {
     const rows = Array.from(table.querySelectorAll('tr'));
     if (rows.length < 2) return [];
@@ -1244,7 +1270,7 @@
     };
   }
 
-  function makeGrowthBadgePlugin(displayValues) {
+  function makeGrowthBadgePlugin(displayValues, labels) {
     return {
       afterDatasetsDraw(chart) {
         const meta = chart.getDatasetMeta(0);
@@ -1254,8 +1280,11 @@
         ctx.save();
         ctx.font = '500 9px "IBM Plex Mono"';
         meta.data.forEach((bar, i) => {
-          if (i === 0) return;
-          const prev = displayValues[i - 1], curr = displayValues[i];
+          // Compare against the previous period of the same length, not the
+          // bar to the left — a quarter next to a full year is not growth.
+          const j = previousComparableIndex(labels, i);
+          if (j < 0) return;
+          const prev = displayValues[j], curr = displayValues[i];
           if (prev == null || curr == null || prev === 0) return;
           const pct = ((curr - prev) / Math.abs(prev)) * 100;
           const text = (pct >= 0 ? '+' : '') + pct.toFixed(1) + '%';
@@ -1291,6 +1320,50 @@
     };
   }
 
+  // Band + caption behind quarterly bars in a mixed annual/quarterly series,
+  // so a three-month figure is never read as a collapse in the annual trend.
+  function makeQuarterRegionPlugin(isQuarter) {
+    return {
+      beforeDatasetsDraw(chart) {
+        const meta = chart.getDatasetMeta(0);
+        const { ctx, chartArea } = chart;
+        if (!meta || !meta.data.length || !chartArea) return;
+        const xs = meta.data.map(b => b.x);
+        const leftEdge  = i => (i === 0 ? chartArea.left : (xs[i - 1] + xs[i]) / 2);
+        const rightEdge = i => (i === xs.length - 1 ? chartArea.right : (xs[i] + xs[i + 1]) / 2);
+
+        ctx.save();
+        for (let i = 0; i < isQuarter.length && i < xs.length; i++) {
+          if (!isQuarter[i]) continue;
+          let j = i;
+          while (j + 1 < isQuarter.length && isQuarter[j + 1]) j++;   // contiguous run
+          const l = leftEdge(i), r = rightEdge(j);
+
+          ctx.fillStyle = 'rgba(33,150,243,0.06)';
+          ctx.fillRect(l, chartArea.top, r - l, chartArea.bottom - chartArea.top);
+
+          ctx.strokeStyle = 'rgba(33,150,243,0.35)';
+          ctx.lineWidth = 1;
+          ctx.setLineDash([4, 4]);
+          ctx.beginPath();
+          ctx.moveTo(l, chartArea.top); ctx.lineTo(l, chartArea.bottom);
+          ctx.moveTo(r, chartArea.top); ctx.lineTo(r, chartArea.bottom);
+          ctx.stroke();
+          ctx.setLineDash([]);
+
+          ctx.fillStyle = 'rgba(100,181,246,0.85)';
+          ctx.font = '500 9px "IBM Plex Mono"';
+          ctx.textAlign = 'center';
+          ctx.textBaseline = 'top';
+          ctx.fillText('QUARTER (3-MO)', (l + r) / 2, chartArea.top + 2);
+
+          i = j;
+        }
+        ctx.restore();
+      }
+    };
+  }
+
   let chartInstances = [];
 
   function renderBarChart(canvas, cd) {
@@ -1300,6 +1373,13 @@
     else if (maxAbs >= 1e6)  { divisor = 1e6;  unit = 'M'; }
     else if (maxAbs >= 1e3)  { divisor = 1e3;  unit = 'K'; }
     const displayValues = cd.values.map(v => +(v / divisor).toFixed(2));
+
+    // Mixed annual + quarterly series: the trend line follows the full-year
+    // bars only; quarterly points are plotted as standalone markers.
+    const quarterFlags  = cd.labels.map(isQuarterlyPeriod);
+    const mixedPeriods  = quarterFlags.some(Boolean) && quarterFlags.some(q => !q);
+    const trendValues   = displayValues.map((v, i) => (mixedPeriods && quarterFlags[i]) ? null : v);
+    const quarterValues = mixedPeriods ? displayValues.map((v, i) => quarterFlags[i] ? v : null) : null;
 
     const instance = new Chart(canvas, {
       type: 'bar',
@@ -1337,9 +1417,11 @@
             order: 1,
           },
           {
-            // Smooth trend line over all bars
+            // Smooth trend line over comparable (same-length) periods
             type: 'line',
-            data: displayValues,
+            label: 'Trend',
+            data: trendValues,
+            spanGaps: false,
             borderColor: '#00d084',
             borderWidth: 2,
             tension: 0.4,
@@ -1350,7 +1432,21 @@
             pointHoverRadius: 5,
             fill: false,
             order: 0,
-          }
+          },
+          ...(quarterValues ? [{
+            // Quarterly points: markers only, never joined to the annual trend
+            type: 'line',
+            label: 'Quarter',
+            data: quarterValues,
+            showLine: false,
+            borderColor: 'transparent',
+            pointBackgroundColor: '#2196f3',
+            pointBorderColor: '#0f1318',
+            pointBorderWidth: 1.5,
+            pointRadius: 4,
+            pointHoverRadius: 5,
+            order: 0,
+          }] : [])
         ]
       },
       options: {
@@ -1369,10 +1465,18 @@
             bodyFont: { family: 'IBM Plex Mono', size: 11 },
             callbacks: {
               label(ctx) {
-                if (ctx.datasetIndex === 1) return `  Trend: $${ctx.parsed.y}${unit}`;
                 const lbl = cd.labels[ctx.dataIndex];
-                const sfx = isEstimate(lbl) ? 'E' : isSecFilingPeriod(lbl) ? ' (SEC)' : '';
+                if (ctx.dataset.label === 'Trend')   return `  Trend: $${ctx.parsed.y}${unit}`;
+                if (ctx.dataset.label === 'Quarter') return `  Quarter: $${ctx.parsed.y}${unit}`;
+                const sfx = isEstimate(lbl)                              ? 'E'                       :
+                            isSecFilingPeriod(lbl)                       ? ' (SEC · 3-month period)' :
+                            '';
                 return `  $${ctx.parsed.y}${unit}${sfx}`;
+              },
+              afterBody(items) {
+                const i = items && items.length ? items[0].dataIndex : -1;
+                if (i < 0 || !quarterFlags[i]) return [];
+                return ['  3-month figure — not comparable to full-year bars'];
               }
             }
           }
@@ -1396,8 +1500,9 @@
         animation: { duration: 700, easing: 'easeOutQuart' },
       },
       plugins: [
+        ...(mixedPeriods ? [makeQuarterRegionPlugin(quarterFlags)] : []),
         makeValueLabelPlugin(displayValues, cd.labels, unit),
-        makeGrowthBadgePlugin(displayValues),
+        makeGrowthBadgePlugin(displayValues, cd.labels),
       ]
     });
     chartInstances.push(instance);
@@ -1535,6 +1640,9 @@
       // ── Legend ───────────────────────────────────────────────────
       const anyEst    = blk.metrics.some(cd => cd.labels && cd.labels.some(l => isEstimate(l)));
       const anySecBar = blk.metrics.some(cd => cd.labels && cd.labels.some(l => isSecFilingPeriod(l)));
+      const anyQtr    = blk.metrics.some(cd => cd.labels &&
+                          cd.labels.some(l => isQuarterlyPeriod(l)) &&
+                          cd.labels.some(l => !isQuarterlyPeriod(l)));
       if (anyEst || anySecBar || blk.isGrouped) {
         const leg = document.createElement('div');
         leg.className = 'chart-legend';
@@ -1542,9 +1650,9 @@
           leg.innerHTML = '<span style="color:#8b6914">■ Low</span><span style="color:#f5a623">■ Mean</span><span style="color:#ffd066">■ High</span>';
         } else {
           let lhtml = '<span class="legend-actual">■ Actual</span>';
-          if (anySecBar) lhtml += '<span style="color:var(--blue)">■ SEC Filing</span>';
+          if (anySecBar) lhtml += `<span style="color:var(--blue)">■ SEC Filing${anyQtr ? ' (quarter, 3-mo)' : ''}</span>`;
           if (anyEst)    lhtml += '<span class="legend-estimate">▪ Estimate</span>';
-          lhtml += '<span class="legend-trend">— Trend</span>';
+          lhtml += `<span class="legend-trend">— Trend${anyQtr ? ' (full years)' : ''}</span>`;
           leg.innerHTML = lhtml;
         }
         block.appendChild(leg);
@@ -1600,6 +1708,7 @@
       foot.textContent =
         `Historical data: Yahoo Finance | Current period: SEC Filing | ` +
         `Forward estimates: Analyst Consensus${analystStr} | ` +
+        (anyQtr ? `Shaded band = quarterly (3-month) figure, not comparable to full-year bars | ` : '') +
         `All figures subject to restatement`;
       block.appendChild(foot);
 
