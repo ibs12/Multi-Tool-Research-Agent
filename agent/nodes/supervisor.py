@@ -31,7 +31,12 @@ from agent.state import AgentState
 
 load_dotenv()
 
-MODEL = os.getenv("CLAUDE_MODEL", "claude-sonnet-4-6")
+# Single flagship model for both supervisor and synthesis (legibility over a
+# split). On claude-opus-4-8, omitting `thinking` runs WITHOUT thinking, so the
+# small MAX_TOKENS below are safe. A future move to claude-sonnet-5 would need
+# thinking={"type":"disabled"} or a larger MAX_TOKENS — Sonnet 5 runs adaptive
+# thinking by default when the field is omitted, which would eat this budget.
+MODEL = os.getenv("CLAUDE_MODEL", "claude-opus-4-8")
 MAX_TOKENS = 1024
 
 # -- Improvement 1: Native tool schemas ---------------------------------------

@@ -28,7 +28,7 @@ services:
     environment:
       ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY}
       TAVILY_API_KEY:    ${TAVILY_API_KEY}
-      CLAUDE_MODEL:      ${CLAUDE_MODEL:-claude-sonnet-4-6}
+      CLAUDE_MODEL:      ${CLAUDE_MODEL:-claude-opus-4-8}
       MAX_ITERATIONS:    ${MAX_ITERATIONS:-8}
       # Point to the pgvector service by container name
       PGVECTOR_URL: postgresql://${POSTGRES_USER:-postgres}:${POSTGRES_PASSWORD:-ragpassword}@pgvector:5432/${POSTGRES_DB:-financial_agent}

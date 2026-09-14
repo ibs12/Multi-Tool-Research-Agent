@@ -31,7 +31,8 @@ from agent.state import AgentState
 
 load_dotenv()
 
-MODEL      = os.getenv("CLAUDE_MODEL", "claude-sonnet-4-6")
+# See supervisor.py for the model choice + the thinking/MAX_TOKENS caveat.
+MODEL      = os.getenv("CLAUDE_MODEL", "claude-opus-4-8")
 MAX_TOKENS = 2048
 
 
