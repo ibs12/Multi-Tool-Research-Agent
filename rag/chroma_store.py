@@ -233,6 +233,26 @@ def format_rag_results(results: list[dict], query_text: str) -> str:
     return "\n".join(lines)
 
 
+def existing_source_urls() -> set:
+    """
+    Distinct filing source_urls already stored. Used to skip re-fetching and
+    re-embedding filings we already hold — an exact per-filing check, so a new
+    filing (new URL) is always ingested and no fuzzy company match can false-skip.
+    """
+    try:
+        collection = _get_collection()
+        if collection.count() == 0:
+            return set()
+        all_meta = collection.get(include=["metadatas"])
+        return {
+            m.get("source_url", "")
+            for m in (all_meta.get("metadatas") or [])
+            if m.get("source_url")
+        }
+    except Exception:
+        return set()
+
+
 def collection_stats() -> dict:
     """Return stats about the current vector store state, including per-company counts."""
     try:

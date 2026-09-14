@@ -22,15 +22,17 @@ if os.getenv("PGVECTOR_URL"):
         query,
         format_rag_results,
         collection_stats,
+        existing_source_urls,
     )
     BACKEND = "pgvector"
 else:
     import asyncio as _asyncio
     from rag.chroma_store import (
-        ingest_chunks    as _ingest_sync,
-        query            as _query_sync,
-        format_rag_results,                # pure function — stays sync
-        collection_stats as _stats_sync,
+        ingest_chunks        as _ingest_sync,
+        query                as _query_sync,
+        format_rag_results,                    # pure function — stays sync
+        collection_stats     as _stats_sync,
+        existing_source_urls as _urls_sync,
     )
 
     async def ingest_chunks(chunks):       # noqa: F811
@@ -41,5 +43,8 @@ else:
 
     async def collection_stats():          # noqa: F811
         return await _asyncio.to_thread(_stats_sync)
+
+    async def existing_source_urls():      # noqa: F811
+        return await _asyncio.to_thread(_urls_sync)
 
     BACKEND = "chromadb"

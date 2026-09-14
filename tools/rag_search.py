@@ -20,16 +20,23 @@ from __future__ import annotations
 import asyncio
 import re
 from rag.sec_fetcher import fetch_and_chunk
-from rag.rag_backend import ingest_chunks, query, format_rag_results, collection_stats
+from rag.rag_backend import ingest_chunks, query, format_rag_results, existing_source_urls
+
+# Error sentinel — a RAG call "failed" iff its output starts with this. Defined
+# once here so the tool and its node can't drift apart (see ADR-0003).
+RAG_ERROR = "[RAG Error]"
 
 
 # -- Ingest phase -------------------------------------------------------------
 
 async def ingest_filings_from_state(tool_results: list[dict]) -> str:
     """
-    Parse SEC EDGAR tool results from agent state, fetch the filing
-    documents concurrently, and ingest into the vector store.
-    Returns a status string describing what was ingested.
+    Parse SEC EDGAR tool results from agent state, then fetch/chunk/ingest only
+    the filings we don't already hold — an exact per-filing source_url check.
+
+    A new filing (new URL) is always ingested (no staleness); a filing already
+    stored is skipped before fetching (no redundant download/embed), with no
+    fuzzy company-name match that could false-skip a different company.
     """
     edgar_results = [
         r for r in tool_results
@@ -39,16 +46,26 @@ async def ingest_filings_from_state(tool_results: list[dict]) -> str:
     if not edgar_results:
         return "RAG INGEST: No SEC EDGAR results found in state to ingest."
 
-    filings_to_fetch = []
+    filings = []
     for result in edgar_results:
-        filings_to_fetch.extend(_parse_edgar_output(result["output"]))
+        filings.extend(_parse_edgar_output(result["output"]))
 
-    if not filings_to_fetch:
+    if not filings:
         return "RAG INGEST: Could not parse filing URLs from SEC EDGAR output."
 
-    target_filings = filings_to_fetch[:3]   # cap at 3 to control latency
+    filings = filings[:3]   # cap at 3 to control latency
 
-    # Fetch and chunk all filings concurrently (sec_fetcher uses urllib — runs in threads)
+    # Exact per-filing check: fetch/embed only filings whose source_url is not
+    # already stored. The store is idempotent by chunk id, so this purely avoids
+    # the redundant network + embedding cost of re-ingesting a known filing.
+    have = await existing_source_urls()
+    todo = [f for f in filings if f["url"] not in have]
+    already = len(filings) - len(todo)
+
+    if not todo:
+        return f"RAG INGEST: Skipped — all {len(filings)} filing(s) already indexed."
+
+    # Fetch and chunk the new filings concurrently (sec_fetcher uses urllib — runs in threads)
     all_chunks = await asyncio.gather(*[
         asyncio.to_thread(
             fetch_and_chunk,
@@ -57,14 +74,14 @@ async def ingest_filings_from_state(tool_results: list[dict]) -> str:
             company=f["company"],
             filed_at=f["filed_at"],
         )
-        for f in target_filings
+        for f in todo
     ])
 
     total_chunks = 0
     ingested: list[str] = []
     skipped:  list[str] = []
 
-    for filing, chunks in zip(target_filings, all_chunks):
+    for filing, chunks in zip(todo, all_chunks):
         if chunks:
             n = await ingest_chunks(chunks)
             total_chunks += n
@@ -78,6 +95,8 @@ async def ingest_filings_from_state(tool_results: list[dict]) -> str:
         f"Filings ingested: {len(ingested)}",
         f"Total chunks stored: {total_chunks}",
     ]
+    if already:
+        lines.append(f"Already indexed (fetch skipped): {already}")
     if ingested:
         lines.append(f"Documents: {', '.join(ingested)}")
     if skipped:
@@ -128,44 +147,26 @@ async def run_rag_query(query_text: str, company: str | None = None) -> str:
         results = await query(query_text, company_filter=company, top_k=5)
         return format_rag_results(results, query_text)
     except Exception as e:
-        return f"[RAG Error] {type(e).__name__}: {e}"
+        return f"{RAG_ERROR} {type(e).__name__}: {e}"
 
 
 # -- Combined entry point (ingest + query) ------------------------------------
 
 async def run_rag_pipeline(query_text: str, tool_results: list[dict], company: str = "") -> str:
     """
-    Full RAG pipeline: ingest SEC filings if needed, then semantic query.
+    Full RAG pipeline: ingest any not-yet-indexed SEC filings, then semantic query.
 
-    Ingest is skipped when the vector store already holds chunks for this
-    company — avoids redundant network fetches and works correctly when
-    rag_search runs in the same dispatcher batch as sec_edgar (both see
-    the same state snapshot, so sec_edgar results aren't in tool_results yet).
+    Never raises: the whole pipeline is wrapped so a store/fetch failure returns
+    a tagged error string rather than propagating out of the tool node and
+    crashing the graph (see ADR-0003). A query-phase error is surfaced at
+    position 0 so the node's success check can see it regardless of the leading
+    ingest status.
     """
-    import re as _re
-
-    stats    = await collection_stats()
-    existing = stats.get("companies", {})
-    company_key = company.strip()
-
-    def _first_word(s: str) -> str:
-        return _re.sub(r'[^a-z]', '', s.lower().split()[0]) if s.strip() else ''
-
-    target_word = _first_word(company_key)
-    already_indexed = any(
-        target_word and target_word in _re.sub(r'[^a-z]', '', stored.lower())
-        for stored in existing
-    ) if target_word else stats.get("total_chunks", 0) > 0
-
-    if already_indexed:
-        chunk_count = existing.get(company_key) or next(
-            (v for k, v in existing.items() if k.lower() == company_key.lower()), 0
-        )
-        ingest_status = (
-            f"RAG INGEST: Skipped — {chunk_count} chunks for '{company_key}' already indexed."
-        )
-    else:
+    try:
         ingest_status = await ingest_filings_from_state(tool_results)
-
-    query_result = await run_rag_query(query_text, company or None)
-    return f"{ingest_status}\n\n{query_result}"
+        query_result  = await run_rag_query(query_text, company or None)
+        if query_result.startswith(RAG_ERROR):
+            return query_result
+        return f"{ingest_status}\n\n{query_result}"
+    except Exception as e:
+        return f"{RAG_ERROR} {type(e).__name__}: {e}"

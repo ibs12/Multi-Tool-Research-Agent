@@ -260,6 +260,22 @@ def format_rag_results(results: list[dict], query_text: str) -> str:
     return "\n".join(lines)
 
 
+async def existing_source_urls() -> set:
+    """
+    Distinct filing source_urls already stored. Used to skip re-fetching and
+    re-embedding filings we already hold — an exact per-filing check, so a new
+    filing (new URL) is always ingested and no fuzzy company match can false-skip.
+    """
+    try:
+        await _ensure_schema()
+        pool = await _get_pool()
+        async with pool.acquire() as conn:
+            rows = await conn.fetch(f"SELECT DISTINCT source_url FROM {TABLE_NAME}")
+        return {r[0] for r in rows if r[0]}
+    except Exception:
+        return set()
+
+
 async def collection_stats() -> dict:
     """Row count per company — mirrors the former psycopg2 API."""
     try:
