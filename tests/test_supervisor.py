@@ -128,11 +128,13 @@ def test_supervisor_increments_iteration_count(mock_anthropic_cls):
 
 
 @patch("agent.nodes.supervisor.anthropic.Anthropic")
-def test_supervisor_force_injects_rag_search_after_sec_edgar(mock_anthropic_cls):
-    """rag_search must be queued in the iteration immediately after sec_edgar."""
+def test_supervisor_does_not_force_inject_rag_search(mock_anthropic_cls):
+    """Ordering (rag_search after sec_edgar) is enforced structurally by the
+    dispatcher's PREREQUISITES (ADR-0002), not the supervisor — so the supervisor
+    passes the plan through untouched and no longer force-queues rag_search."""
     mock_client = MagicMock()
     mock_anthropic_cls.return_value = mock_client
-    # Claude doesn't mention rag_search but sec_edgar already ran
+    # Claude plans only arxiv; sec_edgar already ran.
     mock_client.messages.create.return_value = _make_api_response(
         _make_plan_block(["arxiv"], ready=False)
     )
@@ -148,7 +150,8 @@ def test_supervisor_force_injects_rag_search_after_sec_edgar(mock_anthropic_cls)
     }
     result = supervisor_node(state)
 
-    assert "rag_search" in result["tools_remaining"]
+    assert result["tools_remaining"] == ["arxiv"]
+    assert "rag_search" not in result["tools_remaining"]
 
 
 @patch("agent.nodes.supervisor.anthropic.Anthropic")

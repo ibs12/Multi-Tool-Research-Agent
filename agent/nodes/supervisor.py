@@ -137,8 +137,7 @@ Rules:
 - Call calculate_ratio ONLY when you have extracted actual numbers from tool results
 - Never repeat a tool already in tools_called
 - On the first iteration, always include web_search and wikipedia
-- NEVER put sec_edgar and rag_search in the same tools_to_call list — sec_edgar must complete first so its filing URLs are available to rag_search in the following iteration
-- rag_search is MANDATORY after sec_edgar — always queue it in the iteration immediately after sec_edgar runs
+- After sec_edgar runs, queue rag_search to pull real figures from those filings
 - rag_search extracts real figures: revenue, EPS, gross margin, net income from 10-K/10-Q
 - consensus_estimates provides FORWARD estimates (current + next year EPS/revenue) — call it when you have a ticker and want analyst forecasts
 - Only call calculate_ratio AFTER rag_search has run so you have real figures to compute with
@@ -203,20 +202,11 @@ def supervisor_node(state: AgentState) -> dict:
             "ready_to_synthesise": True,
         }
 
-    # Defensive filter: strip tools already called
-    # Exception: rag_search can only run after sec_edgar, so it may not
-    # have been called yet even if other tools have
+    # Defensive filter: strip tools already called. Tool ordering (rag_search
+    # must follow sec_edgar) is now guaranteed structurally by the dispatcher's
+    # PREREQUISITES (ADR-0002), so the supervisor no longer force-queues rag_search.
     already_called = set(state.get("tools_called", []))
     planned_tools = [t for t in plan.get("tools_to_call", []) if t not in already_called]
-
-    # Force rag_search once after sec_edgar — but only if it has never run
-    # Use the full state tools_called list, not just this iteration
-    all_called = set(state.get("tools_called", []))
-    if ("sec_edgar" in all_called
-            and "rag_search" not in all_called
-            and "rag_search" not in planned_tools
-            and not plan.get("ready_to_synthesise")):
-        planned_tools = ["rag_search"] + [t for t in planned_tools if t != "rag_search"]
 
     # Update financial context
     fin_ctx = dict(state.get("financial_context", {}))
