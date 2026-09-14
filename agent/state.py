@@ -44,7 +44,6 @@ class FinancialContext(TypedDict, total=False):
     company_name: str
     sector: str
     market_cap: str
-    pe_ratio: float | None
     debt_to_equity: float | None
     revenue_growth: str | None
     analyst_sentiment: str  # "bullish" | "bearish" | "neutral"

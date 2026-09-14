@@ -24,7 +24,6 @@ import datetime
 import asyncio
 
 from agent.state import AgentState, ToolResult
-from tools.calculator import run_calculator
 from tools.wikipedia import run_wikipedia
 from tools.arxiv_search import run_arxiv_search
 
@@ -83,38 +82,10 @@ def wikipedia_node(state: AgentState) -> dict:
     }
 
 
-# ── Calculator Node (sync) ────────────────────────────────────────────────────
-
-def calculator_node(state: AgentState) -> dict:
-    raw_instruction = next(
-        (t for t in state.get("tools_remaining", []) if t.startswith("calculator:")),
-        None,
-    )
-    if raw_instruction:
-        calc_query = raw_instruction[len("calculator:"):].strip()
-    else:
-        calc_query = _build_default_query(state.get("financial_context", {}))
-
-    output  = run_calculator(calc_query)
-    success = not output.startswith("[Calculator Error]")
-
-    remaining = [t for t in state.get("tools_remaining", []) if not t.startswith("calculator")]
-
-    return {
-        "tool_results":    state.get("tool_results", []) + [
-            _build_result("calculator", calc_query, output, success,
-                          error=None if success else output)
-        ],
-        "tools_called":    state.get("tools_called", []) + ["calculator"],
-        "tools_remaining": remaining,
-    }
-
-
-def _build_default_query(fin_ctx: dict) -> str:
-    pe = fin_ctx.get("pe_ratio")
-    if pe:
-        return f"expression: {pe}"
-    return "expression: 100 * 1.08 ** 5"
+# Note: there is no calculator tool node. Financial ratios are computed inline
+# by the supervisor via the calculate_ratio tool (agent/nodes/supervisor.py),
+# on numbers it has already extracted from tool results — so it is correctly
+# ordered by construction and needs no dispatcher scheduling.
 
 
 # ── ArXiv Node (sync) ─────────────────────────────────────────────────────────

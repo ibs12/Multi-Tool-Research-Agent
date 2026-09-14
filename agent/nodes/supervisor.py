@@ -67,7 +67,7 @@ TOOL_SCHEMAS = [
                         "type": "string",
                         "enum": [
                             "web_search", "wikipedia", "sec_edgar", "rag_search",
-                            "arxiv", "calculator", "consensus_estimates",
+                            "arxiv", "consensus_estimates",
                         ],
                     },
                     "description": "Tools to invoke next. Keep to 1-2 per iteration.",
@@ -118,7 +118,8 @@ You have two tools available:
 1. plan_research — specify which tools to run next
 2. calculate_ratio — compute a financial ratio from numbers you've already found
 
-Available research tools: web_search, wikipedia, sec_edgar, rag_search, arxiv, calculator, consensus_estimates
+Available research tools: web_search, wikipedia, sec_edgar, rag_search, arxiv, consensus_estimates
+(Financial ratios are computed with the calculate_ratio tool above, not scheduled as a research tool.)
 
 Tool guide:
 - web_search           — recent news, earnings, analyst price targets, sentiment
@@ -126,7 +127,6 @@ Tool guide:
 - sec_edgar            — primary source 10-K/10-Q/8-K filing metadata and URLs
 - rag_search           — semantic search over the CONTENT of those filings (real figures)
 - arxiv                — academic papers on sector risk or quantitative finance
-- calculator           — compute financial ratios once you have real numbers
 - consensus_estimates  — forward-looking analyst EPS and revenue estimates from Yahoo Finance
                          with analyst counts and estimate ranges. Call this after web_search
                          to get structured forward estimates. Only call if a ticker symbol
@@ -141,7 +141,7 @@ Rules:
 - rag_search is MANDATORY after sec_edgar — always queue it in the iteration immediately after sec_edgar runs
 - rag_search extracts real figures: revenue, EPS, gross margin, net income from 10-K/10-Q
 - consensus_estimates provides FORWARD estimates (current + next year EPS/revenue) — call it when you have a ticker and want analyst forecasts
-- Only call calculator AFTER rag_search has run so you have real figures to compute with
+- Only call calculate_ratio AFTER rag_search has run so you have real figures to compute with
 - Set ready_to_synthesise=true when you have enough for a complete analyst brief
 """
 
