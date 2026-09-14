@@ -62,8 +62,8 @@ Requires `ANTHROPIC_API_KEY` and `TAVILY_API_KEY` in `.env`. SEC EDGAR, arXiv, W
 
 ## Notes
 
-- Default model is `claude-sonnet-4-6`, read from `CLAUDE_MODEL` (both supervisor and synthesis). `MAX_ITERATIONS` defaults to 8.
-- The README is thorough but predates several changes: it lists 6 tools (there are 7 — `consensus_estimates` was added), describes a `ThreadPoolExecutor` dispatcher (now pure asyncio), and points to `rag/pgvector_store.py` as the only backend (ChromaDB is the keyless fallback). Trust the code over the README on these.
+- Default model is `claude-opus-4-8`, read from `CLAUDE_MODEL` (both supervisor and synthesis). `MAX_ITERATIONS` defaults to 8.
+- Six dispatcher tools (`web_search`, `wikipedia`, `sec_edgar`, `rag_search`, `arxiv`, `consensus_estimates`) plus the supervisor's **inline** `calculate_ratio` — which is *not* a dispatcher tool (issue #4). The README's "validated test cases" table still says "All 6" from older runs; treat those counts as historical.
 - Deploys to Railway via `railway up` (see the git history / `.claude/settings.local.json`), not the Kubernetes path the README sketches.
 
 ## Agent skills
