@@ -88,6 +88,12 @@ class AgentState(TypedDict):
     final_report: str
     error: str | None
 
+    # Why the run stopped (issue #6):
+    #   "completed"                  — supervisor signalled ready_to_synthesise
+    #   "iteration_budget_exhausted" — hit max_iterations mid-research
+    #   "no_new_tools"               — supervisor had no un-run tools left to plan
+    termination_reason: str | None
+
 
 # -- Factory: safe default state ----------------------------------------------
 
@@ -110,4 +116,5 @@ def make_initial_state(query: str, max_iterations: int = 8) -> dict[str, Any]:
         "forecast": None,
         "final_report": "",
         "error": None,
+        "termination_reason": None,
     }

@@ -98,3 +98,14 @@ def test_satisfied_prereq_lets_dependent_run_immediately():
     names = [r["tool_name"] for r in out["tool_results"]]
     assert "rag_search" in names
     assert _errors(out) == []
+
+
+def test_iteration_budget_exhausted_is_recorded():
+    # Dispatcher runs on the ceiling iteration → records the budget-exhausted reason.
+    seen = {}
+    out = _dispatch(
+        {"tools_remaining": ["web_search"], "tool_results": [], "tools_called": [],
+         "iteration_count": 8, "max_iterations": 8},
+        seen,
+    )
+    assert out.get("termination_reason") == "iteration_budget_exhausted"

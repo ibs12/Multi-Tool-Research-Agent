@@ -100,6 +100,7 @@ class ResearchResponse(BaseModel):
     elapsed_seconds: float
     error: str | None
     forecast: dict | None = None
+    termination_reason: str | None = None
 
 
 # ── Health ────────────────────────────────────────────────────────────────────
@@ -132,6 +133,7 @@ def research(req: ResearchRequest):
         elapsed_seconds=round(time.time() - start, 2),
         error=synthesis.get("error"),
         forecast=result.get("forecast"),
+        termination_reason=result.get("termination_reason"),
     )
 
 
@@ -193,6 +195,11 @@ async def _stream_generator(req: ResearchRequest) -> AsyncGenerator[str, None]:
         forecast = final_state.get("forecast")
         if forecast:
             yield _sse({"event": "forecast", "data": forecast})
+            await asyncio.sleep(0)
+
+        term = final_state.get("termination_reason")
+        if term and term != "completed":
+            yield _sse({"event": "meta", "data": {"termination_reason": term}})
             await asyncio.sleep(0)
 
         yield _sse({"event": "node_complete", "node": "synthesis", "data": {"streaming": True}})

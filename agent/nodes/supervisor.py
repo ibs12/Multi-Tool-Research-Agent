@@ -217,14 +217,25 @@ def supervisor_node(state: AgentState) -> dict:
     existing_results = state.get("tool_results", [])
     all_results = existing_results + inline_calc_results
 
+    ready           = bool(plan.get("ready_to_synthesise"))
+    tools_remaining = [] if ready else planned_tools
+    # Record why we're stopping when the queue is empty — otherwise the exit is
+    # silent (issue #6). Left None while tools remain; the dispatcher overwrites
+    # with "iteration_budget_exhausted" if the ceiling is what stops the run.
+    if tools_remaining:
+        termination_reason = None
+    else:
+        termination_reason = "completed" if ready else "no_new_tools"
+
     return {
         "iteration_count": state.get("iteration_count", 0) + 1,
         "company_target": plan.get("company_target", state.get("company_target", "")),
         "current_plan": plan.get("reasoning", ""),
-        "tools_remaining": [] if plan.get("ready_to_synthesise") else planned_tools,
+        "tools_remaining": tools_remaining,
         "financial_context": fin_ctx,
         "tool_results": inline_calc_results,   # append_list reducer handles merge
         "tools_called": ["calculator"] if inline_calc_results else [],
+        "termination_reason": termination_reason,
     }
 
 

@@ -178,6 +178,25 @@ def _build_synthesis_prompt(state: AgentState) -> str:
         f"RESEARCH QUERY: {state['query']}",
         f"COMPANY TARGET: {state.get('company_target', 'Unknown')}",
         f"SUPERVISOR REASONING: {state.get('current_plan', 'N/A')}",
+    ]
+
+    # If the run stopped before the agent judged the research complete, tell
+    # synthesis so it can temper the verdict rather than overstating confidence.
+    _incomplete = {
+        "iteration_budget_exhausted":
+            "RESEARCH STATUS: stopped at the iteration budget before the agent "
+            "signalled completion — the data below may be partial. Note this in "
+            "the Analyst Verdict and temper confidence accordingly.",
+        "no_new_tools":
+            "RESEARCH STATUS: the agent stopped because it had no new tools left "
+            "to run, not because it judged the research complete — treat coverage "
+            "as partial.",
+    }
+    note = _incomplete.get(state.get("termination_reason"))
+    if note:
+        lines.append(note)
+
+    lines += [
         "",
         "=" * 60,
         "FULL TOOL RESULTS:",

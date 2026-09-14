@@ -154,6 +154,39 @@ def test_supervisor_does_not_force_inject_rag_search(mock_anthropic_cls):
     assert "rag_search" not in result["tools_remaining"]
 
 
+# ── Supervisor node: termination_reason (issue #6) ────────────────────────────
+
+@patch("agent.nodes.supervisor.anthropic.Anthropic")
+def test_termination_reason_completed(mock_anthropic_cls):
+    mock_client = MagicMock()
+    mock_anthropic_cls.return_value = mock_client
+    mock_client.messages.create.return_value = _make_api_response(
+        _make_plan_block([], ready=True)
+    )
+    from agent.nodes.supervisor import supervisor_node
+    state = {"query": "Analyse Apple Inc.", "tools_called": ["web_search"],
+             "tool_results": [], "iteration_count": 3, "max_iterations": 8}
+    result = supervisor_node(state)
+    assert result["tools_remaining"] == []
+    assert result["termination_reason"] == "completed"
+
+
+@patch("agent.nodes.supervisor.anthropic.Anthropic")
+def test_termination_reason_no_new_tools(mock_anthropic_cls):
+    mock_client = MagicMock()
+    mock_anthropic_cls.return_value = mock_client
+    # Plans a tool that already ran, and isn't ready → nothing new to do.
+    mock_client.messages.create.return_value = _make_api_response(
+        _make_plan_block(["web_search"], ready=False)
+    )
+    from agent.nodes.supervisor import supervisor_node
+    state = {"query": "Analyse Apple Inc.", "tools_called": ["web_search"],
+             "tool_results": [], "iteration_count": 3, "max_iterations": 8}
+    result = supervisor_node(state)
+    assert result["tools_remaining"] == []
+    assert result["termination_reason"] == "no_new_tools"
+
+
 @patch("agent.nodes.supervisor.anthropic.Anthropic")
 def test_supervisor_does_not_inject_rag_search_if_already_called(mock_anthropic_cls):
     mock_client = MagicMock()

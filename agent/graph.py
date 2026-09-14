@@ -173,6 +173,12 @@ async def async_tool_dispatcher(state: AgentState) -> dict:
         merged["tool_results"].append(_dispatcher_error(base, unmet))
         merged["tools_called"].append(base)
 
+    # If the iteration ceiling is what stops the run (rather than the supervisor
+    # signalling completion), record it so synthesis/API can say the brief is
+    # budget-limited instead of stopping silently (issue #6).
+    if state.get("iteration_count", 0) >= state.get("max_iterations", 8):
+        merged["termination_reason"] = "iteration_budget_exhausted"
+
     return merged
 
 
