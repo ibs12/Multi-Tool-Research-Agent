@@ -47,10 +47,6 @@ def _build_result(
     )
 
 
-def _pop_tool(state: AgentState, tool_name: str) -> list[str]:
-    return [t for t in state.get("tools_remaining", []) if t != tool_name]
-
-
 # ── Web Search Node (async) ───────────────────────────────────────────────────
 
 async def web_search_node(state: AgentState) -> dict:
@@ -63,13 +59,13 @@ async def web_search_node(state: AgentState) -> dict:
     output  = await run_web_search(query, financial_only=True)
     success = not output.startswith("[WebSearch Error]")
 
+    # Delta only: return just this tool's new result. The append_list reducer
+    # accumulates across the batch/run — returning the full prior list here
+    # would double-count it (see ADR-notes / issue #2).
     return {
-        "tool_results":    state.get("tool_results", []) + [
-            _build_result("web_search", query, output, success,
-                          error=None if success else output)
-        ],
-        "tools_called":    state.get("tools_called", []) + ["web_search"],
-        "tools_remaining": _pop_tool(state, "web_search"),
+        "tool_results": [_build_result("web_search", query, output, success,
+                                       error=None if success else output)],
+        "tools_called": ["web_search"],
     }
 
 
@@ -81,12 +77,9 @@ def wikipedia_node(state: AgentState) -> dict:
     success = not output.startswith("[Wikipedia Error]")
 
     return {
-        "tool_results":    state.get("tool_results", []) + [
-            _build_result("wikipedia", target, output, success,
-                          error=None if success else output)
-        ],
-        "tools_called":    state.get("tools_called", []) + ["wikipedia"],
-        "tools_remaining": _pop_tool(state, "wikipedia"),
+        "tool_results": [_build_result("wikipedia", target, output, success,
+                                       error=None if success else output)],
+        "tools_called": ["wikipedia"],
     }
 
 
@@ -136,12 +129,9 @@ def arxiv_node(state: AgentState) -> dict:
     success = not output.startswith("[ArXiv Error]")
 
     return {
-        "tool_results":    state.get("tool_results", []) + [
-            _build_result("arxiv", query, output, success,
-                          error=None if success else output)
-        ],
-        "tools_called":    state.get("tools_called", []) + ["arxiv"],
-        "tools_remaining": _pop_tool(state, "arxiv"),
+        "tool_results": [_build_result("arxiv", query, output, success,
+                                       error=None if success else output)],
+        "tools_called": ["arxiv"],
     }
 
 
@@ -155,10 +145,9 @@ async def sec_edgar_node(state: AgentState) -> dict:
     success = not output.startswith("[SEC EDGAR Error]")
 
     return {
-        "tool_results":    [_build_result("sec_edgar", target, output, success,
-                                          error=None if success else output)],
-        "tools_called":    ["sec_edgar"],
-        "tools_remaining": _pop_tool(state, "sec_edgar"),
+        "tool_results": [_build_result("sec_edgar", target, output, success,
+                                       error=None if success else output)],
+        "tools_called": ["sec_edgar"],
     }
 
 
@@ -180,10 +169,9 @@ async def rag_search_node(state: AgentState) -> dict:
     success = not output.startswith("[RAG Error]")
 
     return {
-        "tool_results":    [_build_result("rag_search", query, output, success,
-                                          error=None if success else output)],
-        "tools_called":    ["rag_search"],
-        "tools_remaining": _pop_tool(state, "rag_search"),
+        "tool_results": [_build_result("rag_search", query, output, success,
+                                       error=None if success else output)],
+        "tools_called": ["rag_search"],
     }
 
 
@@ -209,10 +197,9 @@ async def consensus_estimates_node(state: AgentState) -> dict:
             f"('{target}'). Format must be 'Company Name (TICKER)'."
         )
         return {
-            "tool_results":    [_build_result("consensus_estimates", target, msg,
-                                              False, error=msg)],
-            "tools_called":    ["consensus_estimates"],
-            "tools_remaining": _pop_tool(state, "consensus_estimates"),
+            "tool_results": [_build_result("consensus_estimates", target, msg,
+                                           False, error=msg)],
+            "tools_called": ["consensus_estimates"],
         }
 
     ticker = ticker_match.group(1)
@@ -234,9 +221,8 @@ async def consensus_estimates_node(state: AgentState) -> dict:
     )
 
     return {
-        "tool_results":    [_build_result("consensus_estimates", ticker, combined, success,
-                                          error=None if success else combined)],
-        "tools_called":    ["consensus_estimates"],
-        "tools_remaining": _pop_tool(state, "consensus_estimates"),
-        "forecast":        outlook,
+        "tool_results": [_build_result("consensus_estimates", ticker, combined, success,
+                                       error=None if success else combined)],
+        "tools_called": ["consensus_estimates"],
+        "forecast":     outlook,
     }
