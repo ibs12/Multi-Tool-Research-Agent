@@ -36,6 +36,9 @@ FINANCIAL_CATEGORIES = [
 MAX_RESULTS = 3          # keep context window cost low
 MAX_ABSTRACT_CHARS = 600 # truncate abstracts to this length
 
+# Error sentinel — imported by arxiv_node (ADR-0003).
+ARXIV_ERROR = "[ArXiv Error]"
+
 
 class ArxivTool:
     """
@@ -132,6 +135,6 @@ def run_arxiv_search(query: str) -> str:
         tool = ArxivTool()
         return tool.search(query)
     except ImportError as e:
-        return f"[ArXiv Error] Missing dependency: {e}"
+        return f"{ARXIV_ERROR} Missing dependency: {e}"
     except Exception as e:
-        return f"[ArXiv Error] {type(e).__name__}: {e}"
+        return f"{ARXIV_ERROR} {type(e).__name__}: {e}"

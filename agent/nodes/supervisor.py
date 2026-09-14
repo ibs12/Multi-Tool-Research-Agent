@@ -246,7 +246,7 @@ def _execute_inline_calc(tool_input: dict) -> dict:
     Execute a calculate_ratio call made directly by the supervisor.
     Returns a ToolResult dict for inclusion in agent state.
     """
-    from tools.calculator import run_calculator
+    from tools.calculator import run_calculator, CALCULATOR_ERROR
 
     ratio_type = tool_input.get("ratio_type", "expression")
     params = tool_input.get("parameters", {})
@@ -258,7 +258,7 @@ def _execute_inline_calc(tool_input: dict) -> dict:
         query = f"{ratio_type}: {param_str}"
 
     output = run_calculator(query)
-    success = not output.startswith("[Calculator Error]")
+    success = not output.startswith(CALCULATOR_ERROR)
 
     return {
         "tool_name": "calculator",

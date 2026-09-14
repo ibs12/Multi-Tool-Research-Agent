@@ -31,6 +31,9 @@ HEADERS = {
     "Accept":     "application/json",
 }
 
+# Error sentinel — imported by sec_edgar_node (ADR-0003).
+SEC_EDGAR_ERROR = "[SEC EDGAR Error]"
+
 
 # -- Async HTTP helper --------------------------------------------------------
 
@@ -206,4 +209,4 @@ async def run_sec_search(query: str) -> str:
     try:
         return await SecEdgarTool().search(query)
     except Exception as e:
-        return f"[SEC EDGAR Error] {type(e).__name__}: {e}"
+        return f"{SEC_EDGAR_ERROR} {type(e).__name__}: {e}"

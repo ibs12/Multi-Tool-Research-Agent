@@ -32,6 +32,10 @@ except ImportError:
     HAS_SYMPY = False
 
 
+# Error sentinel — imported by the supervisor's inline calculate_ratio path (ADR-0003).
+CALCULATOR_ERROR = "[Calculator Error]"
+
+
 # ── Result container ──────────────────────────────────────────────────────────
 
 @dataclass
@@ -44,7 +48,7 @@ class CalcResult:
 
     def to_string(self) -> str:
         if not self.success:
-            return f"[Calculator Error] {self.error}"
+            return f"{CALCULATOR_ERROR} {self.error}"
         return f"{self.expression} = {self.formatted}"
 
 
@@ -195,7 +199,7 @@ def run_calculator(query: str) -> str:
                 result = fn(**params)
                 return f"CALCULATOR RESULT\n{result.to_string()}"
             except Exception as e:
-                return f"[Calculator Error] Failed to call {name}: {e}"
+                return f"{CALCULATOR_ERROR} Failed to call {name}: {e}"
 
     # ── Fall back to safe expression evaluator ────────────────────────────
     result = evaluate_expression(query)

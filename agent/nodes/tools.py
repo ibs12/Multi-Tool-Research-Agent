@@ -24,8 +24,8 @@ import datetime
 import asyncio
 
 from agent.state import AgentState, ToolResult
-from tools.wikipedia import run_wikipedia
-from tools.arxiv_search import run_arxiv_search
+from tools.wikipedia import run_wikipedia, WIKIPEDIA_ERROR
+from tools.arxiv_search import run_arxiv_search, ARXIV_ERROR
 
 
 # ── Shared helpers ────────────────────────────────────────────────────────────
@@ -49,14 +49,14 @@ def _build_result(
 # ── Web Search Node (async) ───────────────────────────────────────────────────
 
 async def web_search_node(state: AgentState) -> dict:
-    from tools.web_search import run_web_search
+    from tools.web_search import run_web_search, WEBSEARCH_ERROR
 
     target = state.get("company_target", state["query"])
     year   = datetime.datetime.now().year
     query  = f"{target} stock earnings analyst sentiment outlook {year - 1} {year}"
 
     output  = await run_web_search(query, financial_only=True)
-    success = not output.startswith("[WebSearch Error]")
+    success = not output.startswith(WEBSEARCH_ERROR)
 
     # Delta only: return just this tool's new result. The append_list reducer
     # accumulates across the batch/run — returning the full prior list here
@@ -73,7 +73,7 @@ async def web_search_node(state: AgentState) -> dict:
 def wikipedia_node(state: AgentState) -> dict:
     target  = state.get("company_target", state["query"])
     output  = run_wikipedia(target)
-    success = not output.startswith("[Wikipedia Error]")
+    success = not output.startswith(WIKIPEDIA_ERROR)
 
     return {
         "tool_results": [_build_result("wikipedia", target, output, success,
@@ -97,7 +97,7 @@ def arxiv_node(state: AgentState) -> dict:
     query   = f"{sector} risk modelling machine learning {target}"
 
     output  = run_arxiv_search(query)
-    success = not output.startswith("[ArXiv Error]")
+    success = not output.startswith(ARXIV_ERROR)
 
     return {
         "tool_results": [_build_result("arxiv", query, output, success,
@@ -109,11 +109,11 @@ def arxiv_node(state: AgentState) -> dict:
 # ── SEC EDGAR Node (async) ────────────────────────────────────────────────────
 
 async def sec_edgar_node(state: AgentState) -> dict:
-    from tools.sec_edgar import run_sec_search
+    from tools.sec_edgar import run_sec_search, SEC_EDGAR_ERROR
 
     target  = state.get("company_target", state["query"])
     output  = await run_sec_search(target)
-    success = not output.startswith("[SEC EDGAR Error]")
+    success = not output.startswith(SEC_EDGAR_ERROR)
 
     return {
         "tool_results": [_build_result("sec_edgar", target, output, success,
@@ -125,7 +125,7 @@ async def sec_edgar_node(state: AgentState) -> dict:
 # ── RAG Search Node (async) ───────────────────────────────────────────────────
 
 async def rag_search_node(state: AgentState) -> dict:
-    from tools.rag_search import run_rag_pipeline
+    from tools.rag_search import run_rag_pipeline, RAG_ERROR
     import re as _re
 
     target  = state.get("company_target", state["query"])
@@ -137,7 +137,7 @@ async def rag_search_node(state: AgentState) -> dict:
         tool_results=state.get("tool_results", []),
         company=company_clean,
     )
-    success = not output.startswith("[RAG Error]")
+    success = not output.startswith(RAG_ERROR)
 
     return {
         "tool_results": [_build_result("rag_search", query, output, success,
@@ -157,7 +157,7 @@ async def consensus_estimates_node(state: AgentState) -> dict:
     if no ticker can be extracted — never guesses a ticker.
     """
     import re as _re
-    from tools.consensus_estimates import run_consensus_estimates
+    from tools.consensus_estimates import run_consensus_estimates, CONSENSUS_ERROR, HISTORICAL_ERROR
 
     target = state.get("company_target", state["query"])
 
@@ -187,8 +187,8 @@ async def consensus_estimates_node(state: AgentState) -> dict:
     combined = consensus_out + "\n\n" + historical_out
     # Succeed if at least one of the two fetches worked
     success = not (
-        consensus_out.startswith("[Consensus Estimates Error]") and
-        historical_out.startswith("[Historical Financials Error]")
+        consensus_out.startswith(CONSENSUS_ERROR) and
+        historical_out.startswith(HISTORICAL_ERROR)
     )
 
     return {
