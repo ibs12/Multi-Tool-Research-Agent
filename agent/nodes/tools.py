@@ -122,22 +122,95 @@ async def sec_edgar_node(state: AgentState) -> dict:
     }
 
 
-# ── RAG Search Node (async) ───────────────────────────────────────────────────
+# ── RAG Search Node (async, via the MCP server) ───────────────────────────────
+# MCP3/ADR-0010: RAG now flows through the standalone MCP server. The research
+# loop binds the MCP tools — this node ingests the filings sec_edgar discovered
+# (MCP `ingest_document`), then semantic-searches them (MCP `search_documents`),
+# so local/CI runs exercise the real MCP protocol path. The supervisor-facing
+# name stays `rag_search` (it searches filings) and the `PREREQUISITES` edge is
+# unchanged (rag still needs sec_edgar's URLs — the ingest_document consumer).
+
+def _mcp_json(result):
+    """MCP tools return their value as JSON — often inside content blocks. Decode
+    to the underlying Python object, tolerating str / content-block-list shapes."""
+    import json
+    if isinstance(result, str):
+        try:
+            return json.loads(result)
+        except Exception:
+            return result
+    if isinstance(result, list) and result and isinstance(result[0], dict) and "text" in result[0]:
+        joined = "".join(b.get("text", "") for b in result if isinstance(b, dict))
+        try:
+            return json.loads(joined)
+        except Exception:
+            return result
+    return result
+
+
+def _format_hits(hits, query: str, ingested: int, n_filings: int) -> str:
+    """Render structured search_documents hits as [SEC Filing]-cited passages."""
+    header = f"(ingested {ingested} chunk(s) from {n_filings} filing(s) via MCP)"
+    if not isinstance(hits, list) or not hits:
+        return f"RAG SEARCH (via MCP): {header}\nNo relevant passages for '{query}'."
+    lines = [f"RAG SEARCH (via MCP) — {len(hits)} passage(s) for: {query}", header, "=" * 50]
+    for h in hits:
+        if not isinstance(h, dict):
+            continue
+        lines += [
+            f"[SEC Filing] {h.get('document_type','')} {h.get('entity','')} "
+            f"({h.get('published_at','')}) — {h.get('section','')} "
+            f"| similarity {h.get('similarity','?')}",
+            f"  {str(h.get('text',''))[:600]}",
+            f"  Source: {h.get('source_url','')}",
+            "",
+        ]
+    return "\n".join(lines)
+
 
 async def rag_search_node(state: AgentState) -> dict:
-    from tools.rag_search import run_rag_pipeline, RAG_ERROR
     import re as _re
+    from tools.rag_search import _parse_edgar_output, RAG_ERROR
+    from agent import mcp_client
 
     target  = state.get("company_target", state["query"])
     query   = f"revenue earnings EPS net income profit margin {target}"
-    company_clean = _re.sub(r'\s*\([A-Z]{1,5}\)\s*$', '', target).strip()
+    company = _re.sub(r'\s*\([A-Z]{1,5}\)\s*$', '', target).strip()
 
-    output  = await run_rag_pipeline(
-        query_text=query,
-        tool_results=state.get("tool_results", []),
-        company=company_clean,
-    )
-    success = not output.startswith(RAG_ERROR)
+    try:
+        # 1) Discover filings from the sec_edgar output already in state.
+        filings: list[dict] = []
+        for r in state.get("tool_results", []):
+            if r.get("tool_name") == "sec_edgar" and r.get("success"):
+                filings.extend(_parse_edgar_output(r["output"]))
+        filings = filings[:3]
+
+        ingest_tool = await mcp_client.get_tool("ingest_document")
+        search_tool = await mcp_client.get_tool("search_documents")
+        if ingest_tool is None or search_tool is None:
+            raise RuntimeError("MCP RAG tools unavailable")
+
+        # 2) Ingest each filing through the MCP server (idempotent server-side).
+        ingested = 0
+        for f in filings:
+            res = await ingest_tool.ainvoke({
+                "url": f["url"],
+                "entity": f["company"],
+                "document_type": f["form_type"],
+                "published_at": f.get("filed_at", ""),
+            })
+            data = _mcp_json(res)
+            if isinstance(data, dict):
+                ingested += int(data.get("chunks_ingested", 0) or 0)
+
+        # 3) Semantic-search through the MCP server.
+        hits = _mcp_json(await search_tool.ainvoke(
+            {"query": query, "entity": company, "top_k": 5}))
+        output  = _format_hits(hits, query, ingested, len(filings))
+        success = not output.startswith(RAG_ERROR)
+    except Exception as e:
+        output  = f"{RAG_ERROR} {type(e).__name__}: {e}"
+        success = False
 
     return {
         "tool_results": [_build_result("rag_search", query, output, success,

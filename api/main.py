@@ -11,7 +11,11 @@ Endpoints:
 
 SSE event types:
   node_complete   — a graph node finished  {"event","node","data"}
+                    (node ∈ tools, supervisor, dispatcher, risk_analyst,
+                     compliance_checker, synthesis)
   forecast        — structured outlook     {"event","data": {...}}
+  escalation      — compliance escalated   {"event","data": {package, verdict}}
+                    (terminal — no report follows; ADR-0009)
   report_chunk    — one synthesis token    {"event","data": "<text>"}
   report          — full final report      {"event","data": "<markdown>"}
   error           — something went wrong   {"event","data": "<message>"}
@@ -89,6 +93,10 @@ class ResearchRequest(BaseModel):
     query: str = Field(..., min_length=5, max_length=500,
                        example="Analyse JPMorgan Chase investment outlook")
     max_iterations: int = Field(default=8, ge=1, le=16)
+    # "multi" (research → risk → compliance) or "single" (the pre-multi-agent
+    # baseline). None → the AGENT_MODE env default. Per-request override lets the
+    # E5 before/after run both arms against one server.
+    agent_mode: str | None = Field(default=None, pattern="^(multi|single)$")
 
 
 class ResearchResponse(BaseModel):
@@ -101,6 +109,12 @@ class ResearchResponse(BaseModel):
     error: str | None
     forecast: dict | None = None
     termination_reason: str | None = None
+    # Populated instead of final_report when compliance escalated (ADR-0009).
+    escalation: dict | None = None
+
+
+def _resolve_agent_mode(req: "ResearchRequest") -> str:
+    return req.agent_mode or _os.getenv("AGENT_MODE", "multi")
 
 
 # ── Health ────────────────────────────────────────────────────────────────────
@@ -116,11 +130,16 @@ def health():
 def research(req: ResearchRequest):
     """Run the full agent and return the complete report as JSON."""
     start = time.time()
-    state = make_initial_state(req.query, max_iterations=req.max_iterations)
+    state = make_initial_state(req.query, max_iterations=req.max_iterations,
+                               agent_mode=_resolve_agent_mode(req))
 
     try:
-        result    = graph.invoke(state)
-        synthesis = synthesis_node(result)
+        result = graph.invoke(state)
+        # Escalation is terminal — no brief (ADR-0009).
+        if result.get("termination_reason") == "escalated":
+            synthesis = {"final_report": "", "error": None}
+        else:
+            synthesis = synthesis_node(result)
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
@@ -134,6 +153,7 @@ def research(req: ResearchRequest):
         error=synthesis.get("error"),
         forecast=result.get("forecast"),
         termination_reason=result.get("termination_reason"),
+        escalation=(result.get("handoff", {}) or {}).get("escalation"),
     )
 
 
@@ -164,7 +184,8 @@ async def research_stream(req: ResearchRequest):
 
 async def _stream_generator(req: ResearchRequest) -> AsyncGenerator[str, None]:
     async with _semaphore:
-        initial_state = make_initial_state(req.query, req.max_iterations)
+        initial_state = make_initial_state(req.query, req.max_iterations,
+                                           agent_mode=_resolve_agent_mode(req))
 
         # ── Phase 1: native async graph streaming ─────────────────────────────
         # graph.astream() awaits async nodes directly and runs sync nodes
@@ -183,6 +204,19 @@ async def _stream_generator(req: ResearchRequest) -> AsyncGenerator[str, None]:
                 prev = state
         except Exception as e:
             yield _sse({"event": "error", "data": str(e)})
+            yield _sse({"event": "done"})
+            return
+
+        # ── Escalation is terminal — emit the package, skip synthesis (ADR-0009) ─
+        if final_state.get("termination_reason") == "escalated":
+            handoff = final_state.get("handoff", {}) or {}
+            yield _sse({
+                "event": "escalation",
+                "data": {
+                    "package": handoff.get("escalation", {}),
+                    "verdict": handoff.get("compliance_verdict", {}),
+                },
+            })
             yield _sse({"event": "done"})
             return
 
@@ -280,6 +314,23 @@ def _diff_state(prev: dict, curr: dict) -> tuple[str | None, dict]:
             "tool":    r["tool_name"],
             "success": r["success"],
             "preview": r["output"][:300] if r["success"] else r.get("error", ""),
+        }
+
+    # 3. handoff contract grew → a specialized agent ran (risk / compliance).
+    prev_ho: dict = prev.get("handoff") or {}
+    curr_ho: dict = curr.get("handoff") or {}
+    if "risk_assessment" in curr_ho and "risk_assessment" not in prev_ho:
+        ra = curr_ho["risk_assessment"] or {}
+        return "risk_analyst", {
+            "risk_summary": ra.get("risk_summary", ""),
+            "red_flags":    ra.get("red_flags", []),
+        }
+    if "compliance_verdict" in curr_ho and "compliance_verdict" not in prev_ho:
+        cv = curr_ho["compliance_verdict"] or {}
+        return "compliance_checker", {
+            "verdict":  cv.get("verdict", ""),
+            "reasons":  cv.get("reasons", []),
+            "gap_type": cv.get("gap_type"),
         }
 
     return None, {}

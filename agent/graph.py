@@ -3,13 +3,23 @@ agent/graph.py
 --------------
 Assembles the LangGraph StateGraph for the research loop.
 
-Topology:
-    [START] → supervisor → dispatcher → supervisor (loops)
-                        ↘                          ↘
-                         [END]                      [END]
+Topology (agent_mode="multi"):
+    [START] → supervisor ⇄ dispatcher            (research loop)
+                    │
+                    ▼  (research done)
+              risk_analyst ──→ compliance_checker ──→ [END, "completed"]  → synthesis
+                    │                 │
+                    └── hand-back ────┴── escalate ──→ [END, "escalated"] → package
+                        (to supervisor, capped)
 
-Synthesis is NOT a node in this graph — it is called separately by both
-run.py (CLI) and api/main.py (API) after the graph completes.
+In agent_mode="single" the research loop exits straight to [END] and synthesis
+runs as before — the pre-multi-agent baseline on the identical substrate (E5).
+
+Synthesis is NOT a node in this graph (ADR-0004) — run.py (CLI) and api/main.py
+(API) call it after the graph completes, but only when the run did NOT escalate
+(termination_reason != "escalated"); an escalated run renders its package
+instead (ADR-0009). The risk-analyst and compliance-checker hand off via
+Command(goto=…) (ADR-0006); the research loop is reused unchanged (ADR-0007).
 
 Parallel tool execution:
     async_tool_dispatcher is a proper async def so LangGraph's astream()
@@ -32,6 +42,7 @@ from langgraph.graph import StateGraph, START, END
 
 from agent.state import AgentState
 from agent.nodes.supervisor import supervisor_node
+from agent.nodes.agents import risk_analyst_node, compliance_checker_node
 from agent.nodes.tools import (
     web_search_node,
     wikipedia_node,
@@ -58,7 +69,8 @@ TOOL_REGISTRY = {
 # Membership rule keeps this complete: the next dependent tool is a one-line add.
 # (ADR-0002. Argument/state preconditions are a separate concern — see GUARDS.)
 PREREQUISITES: dict[str, list[str]] = {
-    "rag_search": ["sec_edgar"],   # rag ingests the filing URLs sec_edgar writes
+    "rag_search": ["sec_edgar"],   # rag ingests (via MCP ingest_document) the
+                                   # filing URLs sec_edgar writes (MCP3/ADR-0010)
 }
 
 
@@ -183,16 +195,26 @@ async def async_tool_dispatcher(state: AgentState) -> dict:
 
 
 # ── Routers ───────────────────────────────────────────────────────────────────
+# When the research loop is done, `agent_mode` decides where it goes:
+#   "multi"  → hand off to the risk-analyst (research → risk → compliance)
+#   "single" → END, and synthesis runs outside the graph as before (the
+#              pre-multi-agent baseline, exercised on the identical substrate — E5)
+# The risk-analyst and compliance-checker do NOT use these routers — they own
+# their next hop via Command(goto=…) (ADR-0006 peer handoff).
+
+def _research_exit(state: AgentState) -> str:
+    return "risk_analyst" if state.get("agent_mode") == "multi" else END
+
 
 def route_after_supervisor(state: AgentState) -> str:
-    if not state.get("tools_remaining"):
-        return END
-    return "dispatcher"
+    if state.get("tools_remaining"):
+        return "dispatcher"
+    return _research_exit(state)
 
 
 def route_after_dispatcher(state: AgentState) -> str:
     if state.get("iteration_count", 0) >= state.get("max_iterations", 8):
-        return END
+        return _research_exit(state)
     return "supervisor"
 
 
@@ -203,18 +225,22 @@ def build_graph() -> StateGraph:
 
     builder.add_node("supervisor", supervisor_node)
     builder.add_node("dispatcher", async_tool_dispatcher)
+    # The two specialized agents route via Command(goto=…); they need no
+    # conditional edges of their own (ADR-0006).
+    builder.add_node("risk_analyst", risk_analyst_node)
+    builder.add_node("compliance_checker", compliance_checker_node)
 
     builder.add_edge(START, "supervisor")
 
     builder.add_conditional_edges(
         "supervisor",
         route_after_supervisor,
-        {"dispatcher": "dispatcher", END: END},
+        {"dispatcher": "dispatcher", "risk_analyst": "risk_analyst", END: END},
     )
     builder.add_conditional_edges(
         "dispatcher",
         route_after_dispatcher,
-        {"supervisor": "supervisor", END: END},
+        {"supervisor": "supervisor", "risk_analyst": "risk_analyst", END: END},
     )
 
     return builder.compile()
