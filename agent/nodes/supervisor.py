@@ -31,7 +31,12 @@ from agent.state import AgentState
 
 load_dotenv()
 
-MODEL = os.getenv("CLAUDE_MODEL", "claude-sonnet-4-6")
+# Single flagship model for both supervisor and synthesis (legibility over a
+# split). On claude-opus-4-8, omitting `thinking` runs WITHOUT thinking, so the
+# small MAX_TOKENS below are safe. A future move to claude-sonnet-5 would need
+# thinking={"type":"disabled"} or a larger MAX_TOKENS — Sonnet 5 runs adaptive
+# thinking by default when the field is omitted, which would eat this budget.
+MODEL = os.getenv("CLAUDE_MODEL", "claude-opus-4-8")
 MAX_TOKENS = 1024
 
 # -- Improvement 1: Native tool schemas ---------------------------------------
@@ -67,7 +72,7 @@ TOOL_SCHEMAS = [
                         "type": "string",
                         "enum": [
                             "web_search", "wikipedia", "sec_edgar", "rag_search",
-                            "arxiv", "calculator", "consensus_estimates",
+                            "arxiv", "consensus_estimates",
                         ],
                     },
                     "description": "Tools to invoke next. Keep to 1-2 per iteration.",
@@ -118,7 +123,8 @@ You have two tools available:
 1. plan_research — specify which tools to run next
 2. calculate_ratio — compute a financial ratio from numbers you've already found
 
-Available research tools: web_search, wikipedia, sec_edgar, rag_search, arxiv, calculator, consensus_estimates
+Available research tools: web_search, wikipedia, sec_edgar, rag_search, arxiv, consensus_estimates
+(Financial ratios are computed with the calculate_ratio tool above, not scheduled as a research tool.)
 
 Tool guide:
 - web_search           — recent news, earnings, analyst price targets, sentiment
@@ -126,7 +132,6 @@ Tool guide:
 - sec_edgar            — primary source 10-K/10-Q/8-K filing metadata and URLs
 - rag_search           — semantic search over the CONTENT of those filings (real figures)
 - arxiv                — academic papers on sector risk or quantitative finance
-- calculator           — compute financial ratios once you have real numbers
 - consensus_estimates  — forward-looking analyst EPS and revenue estimates from Yahoo Finance
                          with analyst counts and estimate ranges. Call this after web_search
                          to get structured forward estimates. Only call if a ticker symbol
@@ -137,11 +142,10 @@ Rules:
 - Call calculate_ratio ONLY when you have extracted actual numbers from tool results
 - Never repeat a tool already in tools_called
 - On the first iteration, always include web_search and wikipedia
-- NEVER put sec_edgar and rag_search in the same tools_to_call list — sec_edgar must complete first so its filing URLs are available to rag_search in the following iteration
-- rag_search is MANDATORY after sec_edgar — always queue it in the iteration immediately after sec_edgar runs
+- After sec_edgar runs, queue rag_search to pull real figures from those filings
 - rag_search extracts real figures: revenue, EPS, gross margin, net income from 10-K/10-Q
 - consensus_estimates provides FORWARD estimates (current + next year EPS/revenue) — call it when you have a ticker and want analyst forecasts
-- Only call calculator AFTER rag_search has run so you have real figures to compute with
+- Only call calculate_ratio AFTER rag_search has run so you have real figures to compute with
 - Set ready_to_synthesise=true when you have enough for a complete analyst brief
 """
 
@@ -203,20 +207,11 @@ def supervisor_node(state: AgentState) -> dict:
             "ready_to_synthesise": True,
         }
 
-    # Defensive filter: strip tools already called
-    # Exception: rag_search can only run after sec_edgar, so it may not
-    # have been called yet even if other tools have
+    # Defensive filter: strip tools already called. Tool ordering (rag_search
+    # must follow sec_edgar) is now guaranteed structurally by the dispatcher's
+    # PREREQUISITES (ADR-0002), so the supervisor no longer force-queues rag_search.
     already_called = set(state.get("tools_called", []))
     planned_tools = [t for t in plan.get("tools_to_call", []) if t not in already_called]
-
-    # Force rag_search once after sec_edgar — but only if it has never run
-    # Use the full state tools_called list, not just this iteration
-    all_called = set(state.get("tools_called", []))
-    if ("sec_edgar" in all_called
-            and "rag_search" not in all_called
-            and "rag_search" not in planned_tools
-            and not plan.get("ready_to_synthesise")):
-        planned_tools = ["rag_search"] + [t for t in planned_tools if t != "rag_search"]
 
     # Update financial context
     fin_ctx = dict(state.get("financial_context", {}))
@@ -227,14 +222,25 @@ def supervisor_node(state: AgentState) -> dict:
     existing_results = state.get("tool_results", [])
     all_results = existing_results + inline_calc_results
 
+    ready           = bool(plan.get("ready_to_synthesise"))
+    tools_remaining = [] if ready else planned_tools
+    # Record why we're stopping when the queue is empty — otherwise the exit is
+    # silent (issue #6). Left None while tools remain; the dispatcher overwrites
+    # with "iteration_budget_exhausted" if the ceiling is what stops the run.
+    if tools_remaining:
+        termination_reason = None
+    else:
+        termination_reason = "completed" if ready else "no_new_tools"
+
     return {
         "iteration_count": state.get("iteration_count", 0) + 1,
         "company_target": plan.get("company_target", state.get("company_target", "")),
         "current_plan": plan.get("reasoning", ""),
-        "tools_remaining": [] if plan.get("ready_to_synthesise") else planned_tools,
+        "tools_remaining": tools_remaining,
         "financial_context": fin_ctx,
         "tool_results": inline_calc_results,   # append_list reducer handles merge
         "tools_called": ["calculator"] if inline_calc_results else [],
+        "termination_reason": termination_reason,
     }
 
 
@@ -245,7 +251,7 @@ def _execute_inline_calc(tool_input: dict) -> dict:
     Execute a calculate_ratio call made directly by the supervisor.
     Returns a ToolResult dict for inclusion in agent state.
     """
-    from tools.calculator import run_calculator
+    from tools.calculator import run_calculator, CALCULATOR_ERROR
 
     ratio_type = tool_input.get("ratio_type", "expression")
     params = tool_input.get("parameters", {})
@@ -257,7 +263,7 @@ def _execute_inline_calc(tool_input: dict) -> dict:
         query = f"{ratio_type}: {param_str}"
 
     output = run_calculator(query)
-    success = not output.startswith("[Calculator Error]")
+    success = not output.startswith(CALCULATOR_ERROR)
 
     return {
         "tool_name": "calculator",

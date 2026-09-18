@@ -18,8 +18,7 @@ python run.py --stream "Analyse JPMorgan Chase investment outlook"
 ⚙️  dispatcher → sec_edgar + rag_search running concurrently
                   └─ fetches 10-K from SEC, chunks it, embeds into pgvector
                   └─ semantic search returns real income statement figures
-🧠 supervisor  → queuing: ['calculator']
-⚙️  dispatcher → calculator: pe_ratio stock_price=234.5 eps=8.74 = 26.8x
+🧠 supervisor  → calculate_ratio (inline): pe_ratio stock_price=234.5 eps=8.74 = 26.8x
 🧠 supervisor  → ready_to_synthesise
 ✍️  synthesis  → Analyst brief with [SEC Filing] cited primary source data
 ```
@@ -93,15 +92,16 @@ python server.py
   │ Supervisor │              │   Async          │          │ Synthesis  │
   │  (Claude) │──tools_queue─▶   Dispatcher     │          │  (Claude)  │
   │           │◀─────────────│  asyncio.gather()│          │            │
-  │ Native    │   results    │  ThreadPoolExec  │          │ Writes     │
+  │ Native    │   results    │  + to_thread     │          │ Writes     │
   │ tool-use  │              └──────────────────┘          │ report     │
   │ API       │                       │                    └────────────┘
   └───────────┘              ┌────────┴────────────────────────────────┐
                              │              Tool Registry              │
                              │                                         │
                              │  web_search   wikipedia   sec_edgar     │
-                             │  rag_search   calculator  arxiv         │
+                             │  rag_search   arxiv       consensus_est │
                              └─────────────────────────────────────────┘
+       (calculate_ratio is computed inline by the supervisor, not scheduled here)
                                                 │
                                     ┌───────────┘
                                     ▼
@@ -123,7 +123,7 @@ python server.py
 |---|---|
 | **Supervisor-only routing** | Only the supervisor decides when to stop — prevents race conditions in concurrent execution |
 | **Native Anthropic tool-use API** | Typed `TOOL_SCHEMAS` — Claude returns structured `tool_use` blocks, no string parsing |
-| **Async parallel dispatcher** | `asyncio.gather()` + `ThreadPoolExecutor` — web_search + wikipedia run concurrently, ~30% latency reduction |
+| **Async parallel dispatcher** | `asyncio.gather()` awaits async tools directly and wraps sync tools in `asyncio.to_thread` — web_search + wikipedia run concurrently, ~30% latency reduction |
 | **pgvector on PostgreSQL** | ACID-compliant vector store — strict SQL `WHERE company = ?` prevents cross-company result contamination |
 | **Section-boundary chunking** | Chunks split on SEC Item headers (Item 7 MD&A, Item 8 Financial Statements) — semantically coherent retrieval |
 | **Annotated reducers on state** | `append_list` on `tool_results` and `tools_called` — safe concurrent writes without `InvalidUpdateError` |
@@ -138,9 +138,10 @@ python server.py
 | **Web Search** | Tavily API | Live news, earnings, analyst sentiment — financial domains only |
 | **Wikipedia** | Wikipedia API | Stable company facts: founding, HQ, business model, segments |
 | **SEC EDGAR** | EDGAR submissions API (no key) | Primary source 10-K/10-Q/8-K filing metadata |
-| **RAG Search** | pgvector + sentence-transformers | Semantic search over actual 10-K/10-Q document text |
-| **Calculator** | SymPy (sandboxed) | P/E, D/E, CAGR, revenue growth — safe, no `eval()` |
+| **RAG Search** | pgvector or ChromaDB + sentence-transformers | Semantic search over actual 10-K/10-Q document text |
+| **Calculator** _(inline)_ | SymPy (sandboxed) | P/E, D/E, CAGR, revenue growth — invoked directly by the supervisor via `calculate_ratio`, not a dispatcher-scheduled tool; no `eval()` |
 | **ArXiv** | ArXiv client | Academic research in q-fin, cs.AI, cs.LG categories |
+| **Consensus Estimates** | Yahoo Finance (yfinance) | Forward analyst EPS/revenue estimates + historical financials, with analyst counts |
 
 ---
 
@@ -149,9 +150,9 @@ python server.py
 | Layer | Technology |
 |---|---|
 | Agent orchestration | LangGraph `StateGraph` |
-| LLM + tool-use | Anthropic Claude (`claude-sonnet-4-6`) with native tool schemas |
-| Async execution | `asyncio.gather()` + `ThreadPoolExecutor` |
-| Vector database | **pgvector** on PostgreSQL 16 |
+| LLM + tool-use | Anthropic Claude (`claude-opus-4-8`) with native tool schemas |
+| Async execution | `asyncio.gather()` + `asyncio.to_thread` (async tools awaited directly) |
+| Vector database | **pgvector** on PostgreSQL 16 (auto-falls back to **ChromaDB** when `PGVECTOR_URL` is unset) |
 | RAG embeddings | `sentence-transformers/all-MiniLM-L6-v2` (local, no API cost) |
 | RAG document fetch | SEC EDGAR HTML → section-boundary chunking |
 | API layer | FastAPI + Server-Sent Events (SSE) |
@@ -172,16 +173,19 @@ python server.py
 │   └── nodes/
 │       ├── supervisor.py   # Claude + native tool-use API — plans each iteration
 │       ├── synthesis.py    # Claude — writes the final analyst brief
-│       └── tools.py        # LangGraph nodes wrapping all 6 tool implementations
+│       └── tools.py        # LangGraph nodes for the 6 dispatcher tools (calculate_ratio is inline)
 ├── tools/
 │   ├── web_search.py       # Tavily — financial domain filtering, retry logic
 │   ├── wikipedia.py        # Wikipedia — lead section extraction, ticker stripping
 │   ├── sec_edgar.py        # SEC EDGAR — submissions API, ticker→CIK→filings
 │   ├── rag_search.py       # RAG pipeline — ingest filings, query pgvector
 │   ├── calculator.py       # SymPy — safe expression eval + financial ratio library
-│   └── arxiv_search.py     # ArXiv — q-fin + cs.AI category filtering
+│   ├── arxiv_search.py     # ArXiv — q-fin + cs.AI category filtering
+│   └── consensus_estimates.py  # Yahoo Finance — forward estimates, historical financials, forecast chart data
 ├── rag/
-│   ├── pgvector_store.py   # pgvector backend — ingest, query, format
+│   ├── rag_backend.py      # Selects backend at import: pgvector if PGVECTOR_URL set, else ChromaDB
+│   ├── pgvector_store.py   # pgvector backend — ingest, query, format (async)
+│   ├── chroma_store.py     # ChromaDB backend — keyless local fallback (sync, wrapped async)
 │   └── sec_fetcher.py      # Fetch SEC HTML, strip tags, chunk on section headers
 ├── api/
 │   └── main.py             # FastAPI — batch endpoint + SSE streaming endpoint
@@ -214,7 +218,7 @@ POSTGRES_USER=postgres
 POSTGRES_PORT=5433
 
 # Agent tuning
-CLAUDE_MODEL=claude-sonnet-4-6
+CLAUDE_MODEL=claude-opus-4-8
 MAX_ITERATIONS=8
 API_HOST=0.0.0.0
 API_PORT=8000
@@ -222,6 +226,7 @@ API_PORT=8000
 
 > SEC EDGAR requires no API key — uses the public submissions API.
 > The sentence-transformer model downloads automatically on first run.
+> Leave `PGVECTOR_URL` unset to use the local ChromaDB backend instead of PostgreSQL — no Docker required.
 
 ---
 
@@ -360,12 +365,13 @@ docker compose up -d --build agent
 
 ## Extending the Agent
 
-### Add a new tool in 4 steps
+### Add a new tool in 5 steps
 
-1. Implement `run_mytool(query: str) -> str` in `tools/mytool.py`
-2. Add a node function in `agent/nodes/tools.py`
+1. Implement `run_mytool(query: str) -> str` in `tools/mytool.py` — return a tagged error string on failure via a module-level `MYTOOL_ERROR` constant (ADR-0003)
+2. Add a **delta-returning** node in `agent/nodes/tools.py` (import `MYTOOL_ERROR` for the success check)
 3. Register it in `TOOL_REGISTRY` in `agent/graph.py`
-4. Add it to `TOOL_SCHEMAS` enum in `agent/nodes/supervisor.py`
+4. Add it to the `tools_to_call` enum in `agent/nodes/supervisor.py`
+5. If it consumes another tool's output, add a `PREREQUISITES` entry in `agent/graph.py` (ADR-0002)
 
 ### Production deployment path
 
@@ -391,7 +397,7 @@ Kubernetes (OpenShift at Citi)
 | ReAct agent pattern | `agent/nodes/supervisor.py` |
 | Anthropic native tool-use API with typed schemas | `agent/nodes/supervisor.py` — `TOOL_SCHEMAS` |
 | Async parallel execution (`asyncio.gather`) | `agent/graph.py` — `async_tool_dispatcher` |
-| Sync-to-async bridge via `ThreadPoolExecutor` | `agent/graph.py` — `run_in_executor` |
+| Sync-to-async bridge via `asyncio.to_thread` | `agent/graph.py` — `async_tool_dispatcher` |
 | RAG pipeline over primary source documents | `rag/`, `tools/rag_search.py` |
 | pgvector cosine similarity search with SQL filters | `rag/pgvector_store.py` |
 | SEC section-boundary document chunking | `rag/sec_fetcher.py` |

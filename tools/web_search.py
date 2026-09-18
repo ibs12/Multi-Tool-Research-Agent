@@ -42,6 +42,10 @@ FINANCIAL_DOMAINS = [
 
 MIN_RELEVANCE_SCORE = 0.4
 
+# Error sentinel — a call "failed" iff its output starts with this. Imported by
+# web_search_node so the tool and its node can't drift apart (ADR-0003).
+WEBSEARCH_ERROR = "[WebSearch Error]"
+
 
 def _build_kwargs(query: str, max_results: int, financial_only: bool) -> dict[str, Any]:
     kwargs: dict[str, Any] = {
@@ -75,11 +79,11 @@ async def run_web_search(query: str, financial_only: bool = True) -> str:
             response = await asyncio.to_thread(_sync)
         return _format_results(query, response)
     except ImportError as e:
-        return f"[WebSearch Error] Missing dependency: {e}"
+        return f"{WEBSEARCH_ERROR} Missing dependency: {e}"
     except KeyError:
-        return "[WebSearch Error] TAVILY_API_KEY not set in environment."
+        return f"{WEBSEARCH_ERROR} TAVILY_API_KEY not set in environment."
     except Exception as e:
-        return f"[WebSearch Error] {type(e).__name__}: {e}"
+        return f"{WEBSEARCH_ERROR} {type(e).__name__}: {e}"
 
 
 def _format_results(query: str, response: dict[str, Any]) -> str:

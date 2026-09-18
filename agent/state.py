@@ -39,16 +39,13 @@ class ToolResult(TypedDict):
 # -- Financial context extracted by the supervisor ----------------------------
 
 class FinancialContext(TypedDict, total=False):
-    """Structured financial metadata accumulated across iterations."""
-    ticker: str
-    company_name: str
+    """Financial metadata carried across iterations.
+
+    Only ``sector`` is currently written (by the supervisor) and read (by the
+    arxiv node). Speculative fields were removed (issue #10) — add one back when
+    a tool actually writes it and a consumer reads it, not on spec (ADR-0001).
+    """
     sector: str
-    market_cap: str
-    pe_ratio: float | None
-    debt_to_equity: float | None
-    revenue_growth: str | None
-    analyst_sentiment: str  # "bullish" | "bearish" | "neutral"
-    key_risks: list[str]
 
 
 # -- Primary graph state ------------------------------------------------------
@@ -89,6 +86,12 @@ class AgentState(TypedDict):
     final_report: str
     error: str | None
 
+    # Why the run stopped (issue #6):
+    #   "completed"                  — supervisor signalled ready_to_synthesise
+    #   "iteration_budget_exhausted" — hit max_iterations mid-research
+    #   "no_new_tools"               — supervisor had no un-run tools left to plan
+    termination_reason: str | None
+
 
 # -- Factory: safe default state ----------------------------------------------
 
@@ -111,4 +114,5 @@ def make_initial_state(query: str, max_iterations: int = 8) -> dict[str, Any]:
         "forecast": None,
         "final_report": "",
         "error": None,
+        "termination_reason": None,
     }

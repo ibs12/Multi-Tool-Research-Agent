@@ -127,6 +127,8 @@ def _run_batch(state: dict) -> str:
     report       = synthesis.get("final_report", "No report generated.")
     tools_called = result.get("tools_called", [])
     iterations   = result.get("iteration_count", 0)
+    term         = result.get("termination_reason")
+    incomplete   = term not in (None, "completed")
 
     if HAS_RICH:
         console.print(Panel(
@@ -136,6 +138,8 @@ def _run_batch(state: dict) -> str:
             f"Time: [bold]{elapsed:.1f}s[/bold]",
             border_style="green",
         ))
+        if incomplete:
+            console.print(f"[yellow]⚠ research ended early: {term}[/yellow]")
         console.print()
         console.print(Markdown(report))
     else:
@@ -143,6 +147,8 @@ def _run_batch(state: dict) -> str:
         print(f"Tools called: {tools_called}")
         print(f"Iterations:   {iterations}")
         print(f"Time:         {elapsed:.1f}s")
+        if incomplete:
+            print(f"Ended early:  {term}")
         print(f"{'='*60}\n")
         print(report)
 

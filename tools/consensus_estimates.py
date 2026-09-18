@@ -28,6 +28,10 @@ try:
 except ImportError:
     _HAS_YFINANCE = False
 
+# Error sentinels — imported by consensus_estimates_node (ADR-0003).
+CONSENSUS_ERROR  = "[Consensus Estimates Error]"
+HISTORICAL_ERROR = "[Historical Financials Error]"
+
 
 # ── Formatting helpers ────────────────────────────────────────────────────────
 
@@ -108,11 +112,11 @@ def run_consensus_estimates(ticker: str) -> str:
     Never fabricates data: missing values are reported as 'Not available'.
     """
     if not _HAS_YFINANCE:
-        return "[Consensus Estimates Error] Missing dependency: pip install yfinance"
+        return f"{CONSENSUS_ERROR} Missing dependency: pip install yfinance"
 
     ticker = ticker.strip().upper()
     if not ticker:
-        return "[Consensus Estimates Error] Empty ticker symbol provided."
+        return f"{CONSENSUS_ERROR} Empty ticker symbol provided."
 
     today_str = date.today().strftime("%B %d, %Y")
 
@@ -124,7 +128,7 @@ def run_consensus_estimates(ticker: str) -> str:
         # Invalid tickers return a nearly empty info dict (no quoteType, no name)
         if not info.get("quoteType") and not company_name:
             return (
-                f"[Consensus Estimates Error] Ticker '{ticker}' not found on Yahoo Finance. "
+                f"{CONSENSUS_ERROR} Ticker '{ticker}' not found on Yahoo Finance. "
                 f"Ensure the symbol is correct (e.g. 'AAPL', 'JPM', 'GOOGL')."
             )
 
@@ -227,7 +231,7 @@ def run_consensus_estimates(ticker: str) -> str:
 
     except Exception as e:
         return (
-            f"[Consensus Estimates Error] Could not fetch estimates for '{ticker}': "
+            f"{CONSENSUS_ERROR} Could not fetch estimates for '{ticker}': "
             f"{type(e).__name__}: {e}"
         )
 
@@ -246,11 +250,11 @@ def get_historical_financials(ticker: str) -> str:
     Never raises — all failures produce a clear error string.
     """
     if not _HAS_YFINANCE:
-        return "[Historical Financials Error] Missing dependency: pip install yfinance"
+        return f"{HISTORICAL_ERROR} Missing dependency: pip install yfinance"
 
     ticker = ticker.strip().upper()
     if not ticker:
-        return "[Historical Financials Error] Empty ticker symbol provided."
+        return f"{HISTORICAL_ERROR} Empty ticker symbol provided."
 
     today_str   = date.today().strftime("%B %d, %Y")
     cite_date   = date.today().strftime("%Y-%m-%d")
@@ -327,7 +331,7 @@ def get_historical_financials(ticker: str) -> str:
 
     except Exception as e:
         return (
-            f"[Historical Financials Error] Could not fetch historical data for '{ticker}': "
+            f"{HISTORICAL_ERROR} Could not fetch historical data for '{ticker}': "
             f"{type(e).__name__}: {e}"
         )
 
@@ -337,7 +341,7 @@ def run_historical_financials(ticker: str) -> str:
     try:
         return get_historical_financials(ticker)
     except Exception as e:
-        return f"[Historical Financials Error] {type(e).__name__}: {e}"
+        return f"{HISTORICAL_ERROR} {type(e).__name__}: {e}"
 
 
 # ── Forward outlook (structured) ──────────────────────────────────────────────

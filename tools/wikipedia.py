@@ -29,6 +29,9 @@ except ImportError:
 # The lead section is usually 500–1500 chars — enough for grounding context.
 MAX_CHARS = 2000
 
+# Error sentinel — imported by wikipedia_node (ADR-0003).
+WIKIPEDIA_ERROR = "[Wikipedia Error]"
+
 
 class WikipediaTool:
     """
@@ -139,6 +142,6 @@ def run_wikipedia(query: str) -> str:
         tool = WikipediaTool()
         return tool.lookup(query)
     except ImportError as e:
-        return f"[Wikipedia Error] Missing dependency: {e}"
+        return f"{WIKIPEDIA_ERROR} Missing dependency: {e}"
     except Exception as e:
-        return f"[Wikipedia Error] {type(e).__name__}: {e}"
+        return f"{WIKIPEDIA_ERROR} {type(e).__name__}: {e}"

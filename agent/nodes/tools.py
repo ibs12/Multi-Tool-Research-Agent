@@ -24,9 +24,8 @@ import datetime
 import asyncio
 
 from agent.state import AgentState, ToolResult
-from tools.calculator import run_calculator
-from tools.wikipedia import run_wikipedia
-from tools.arxiv_search import run_arxiv_search
+from tools.wikipedia import run_wikipedia, WIKIPEDIA_ERROR
+from tools.arxiv_search import run_arxiv_search, ARXIV_ERROR
 
 
 # ── Shared helpers ────────────────────────────────────────────────────────────
@@ -47,29 +46,25 @@ def _build_result(
     )
 
 
-def _pop_tool(state: AgentState, tool_name: str) -> list[str]:
-    return [t for t in state.get("tools_remaining", []) if t != tool_name]
-
-
 # ── Web Search Node (async) ───────────────────────────────────────────────────
 
 async def web_search_node(state: AgentState) -> dict:
-    from tools.web_search import run_web_search
+    from tools.web_search import run_web_search, WEBSEARCH_ERROR
 
     target = state.get("company_target", state["query"])
     year   = datetime.datetime.now().year
     query  = f"{target} stock earnings analyst sentiment outlook {year - 1} {year}"
 
     output  = await run_web_search(query, financial_only=True)
-    success = not output.startswith("[WebSearch Error]")
+    success = not output.startswith(WEBSEARCH_ERROR)
 
+    # Delta only: return just this tool's new result. The append_list reducer
+    # accumulates across the batch/run — returning the full prior list here
+    # would double-count it (see ADR-notes / issue #2).
     return {
-        "tool_results":    state.get("tool_results", []) + [
-            _build_result("web_search", query, output, success,
-                          error=None if success else output)
-        ],
-        "tools_called":    state.get("tools_called", []) + ["web_search"],
-        "tools_remaining": _pop_tool(state, "web_search"),
+        "tool_results": [_build_result("web_search", query, output, success,
+                                       error=None if success else output)],
+        "tools_called": ["web_search"],
     }
 
 
@@ -78,50 +73,19 @@ async def web_search_node(state: AgentState) -> dict:
 def wikipedia_node(state: AgentState) -> dict:
     target  = state.get("company_target", state["query"])
     output  = run_wikipedia(target)
-    success = not output.startswith("[Wikipedia Error]")
+    success = not output.startswith(WIKIPEDIA_ERROR)
 
     return {
-        "tool_results":    state.get("tool_results", []) + [
-            _build_result("wikipedia", target, output, success,
-                          error=None if success else output)
-        ],
-        "tools_called":    state.get("tools_called", []) + ["wikipedia"],
-        "tools_remaining": _pop_tool(state, "wikipedia"),
+        "tool_results": [_build_result("wikipedia", target, output, success,
+                                       error=None if success else output)],
+        "tools_called": ["wikipedia"],
     }
 
 
-# ── Calculator Node (sync) ────────────────────────────────────────────────────
-
-def calculator_node(state: AgentState) -> dict:
-    raw_instruction = next(
-        (t for t in state.get("tools_remaining", []) if t.startswith("calculator:")),
-        None,
-    )
-    if raw_instruction:
-        calc_query = raw_instruction[len("calculator:"):].strip()
-    else:
-        calc_query = _build_default_query(state.get("financial_context", {}))
-
-    output  = run_calculator(calc_query)
-    success = not output.startswith("[Calculator Error]")
-
-    remaining = [t for t in state.get("tools_remaining", []) if not t.startswith("calculator")]
-
-    return {
-        "tool_results":    state.get("tool_results", []) + [
-            _build_result("calculator", calc_query, output, success,
-                          error=None if success else output)
-        ],
-        "tools_called":    state.get("tools_called", []) + ["calculator"],
-        "tools_remaining": remaining,
-    }
-
-
-def _build_default_query(fin_ctx: dict) -> str:
-    pe = fin_ctx.get("pe_ratio")
-    if pe:
-        return f"expression: {pe}"
-    return "expression: 100 * 1.08 ** 5"
+# Note: there is no calculator tool node. Financial ratios are computed inline
+# by the supervisor via the calculate_ratio tool (agent/nodes/supervisor.py),
+# on numbers it has already extracted from tool results — so it is correctly
+# ordered by construction and needs no dispatcher scheduling.
 
 
 # ── ArXiv Node (sync) ─────────────────────────────────────────────────────────
@@ -133,39 +97,35 @@ def arxiv_node(state: AgentState) -> dict:
     query   = f"{sector} risk modelling machine learning {target}"
 
     output  = run_arxiv_search(query)
-    success = not output.startswith("[ArXiv Error]")
+    success = not output.startswith(ARXIV_ERROR)
 
     return {
-        "tool_results":    state.get("tool_results", []) + [
-            _build_result("arxiv", query, output, success,
-                          error=None if success else output)
-        ],
-        "tools_called":    state.get("tools_called", []) + ["arxiv"],
-        "tools_remaining": _pop_tool(state, "arxiv"),
+        "tool_results": [_build_result("arxiv", query, output, success,
+                                       error=None if success else output)],
+        "tools_called": ["arxiv"],
     }
 
 
 # ── SEC EDGAR Node (async) ────────────────────────────────────────────────────
 
 async def sec_edgar_node(state: AgentState) -> dict:
-    from tools.sec_edgar import run_sec_search
+    from tools.sec_edgar import run_sec_search, SEC_EDGAR_ERROR
 
     target  = state.get("company_target", state["query"])
     output  = await run_sec_search(target)
-    success = not output.startswith("[SEC EDGAR Error]")
+    success = not output.startswith(SEC_EDGAR_ERROR)
 
     return {
-        "tool_results":    [_build_result("sec_edgar", target, output, success,
-                                          error=None if success else output)],
-        "tools_called":    ["sec_edgar"],
-        "tools_remaining": _pop_tool(state, "sec_edgar"),
+        "tool_results": [_build_result("sec_edgar", target, output, success,
+                                       error=None if success else output)],
+        "tools_called": ["sec_edgar"],
     }
 
 
 # ── RAG Search Node (async) ───────────────────────────────────────────────────
 
 async def rag_search_node(state: AgentState) -> dict:
-    from tools.rag_search import run_rag_pipeline
+    from tools.rag_search import run_rag_pipeline, RAG_ERROR
     import re as _re
 
     target  = state.get("company_target", state["query"])
@@ -177,13 +137,12 @@ async def rag_search_node(state: AgentState) -> dict:
         tool_results=state.get("tool_results", []),
         company=company_clean,
     )
-    success = not output.startswith("[RAG Error]")
+    success = not output.startswith(RAG_ERROR)
 
     return {
-        "tool_results":    [_build_result("rag_search", query, output, success,
-                                          error=None if success else output)],
-        "tools_called":    ["rag_search"],
-        "tools_remaining": _pop_tool(state, "rag_search"),
+        "tool_results": [_build_result("rag_search", query, output, success,
+                                       error=None if success else output)],
+        "tools_called": ["rag_search"],
     }
 
 
@@ -198,7 +157,7 @@ async def consensus_estimates_node(state: AgentState) -> dict:
     if no ticker can be extracted — never guesses a ticker.
     """
     import re as _re
-    from tools.consensus_estimates import run_consensus_estimates
+    from tools.consensus_estimates import run_consensus_estimates, CONSENSUS_ERROR, HISTORICAL_ERROR
 
     target = state.get("company_target", state["query"])
 
@@ -209,10 +168,9 @@ async def consensus_estimates_node(state: AgentState) -> dict:
             f"('{target}'). Format must be 'Company Name (TICKER)'."
         )
         return {
-            "tool_results":    [_build_result("consensus_estimates", target, msg,
-                                              False, error=msg)],
-            "tools_called":    ["consensus_estimates"],
-            "tools_remaining": _pop_tool(state, "consensus_estimates"),
+            "tool_results": [_build_result("consensus_estimates", target, msg,
+                                           False, error=msg)],
+            "tools_called": ["consensus_estimates"],
         }
 
     ticker = ticker_match.group(1)
@@ -229,14 +187,13 @@ async def consensus_estimates_node(state: AgentState) -> dict:
     combined = consensus_out + "\n\n" + historical_out
     # Succeed if at least one of the two fetches worked
     success = not (
-        consensus_out.startswith("[Consensus Estimates Error]") and
-        historical_out.startswith("[Historical Financials Error]")
+        consensus_out.startswith(CONSENSUS_ERROR) and
+        historical_out.startswith(HISTORICAL_ERROR)
     )
 
     return {
-        "tool_results":    [_build_result("consensus_estimates", ticker, combined, success,
-                                          error=None if success else combined)],
-        "tools_called":    ["consensus_estimates"],
-        "tools_remaining": _pop_tool(state, "consensus_estimates"),
-        "forecast":        outlook,
+        "tool_results": [_build_result("consensus_estimates", ticker, combined, success,
+                                       error=None if success else combined)],
+        "tools_called": ["consensus_estimates"],
+        "forecast":     outlook,
     }

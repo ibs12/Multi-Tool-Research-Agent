@@ -12,7 +12,8 @@ Run with:
 
 from __future__ import annotations
 
-from unittest.mock import MagicMock, patch
+import asyncio
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
@@ -81,65 +82,81 @@ def test_parse_edgar_no_valid_filings():
     assert _parse_edgar_output("No filings found for this company.") == []
 
 
-# ── run_rag_pipeline — skip-ingest when company already indexed ────────────────
+# ── run_rag_pipeline / ingest — exact per-filing ingest, never-raise ──────────
 
-from tools.rag_search import run_rag_pipeline
-
-
-def _make_stats(company: str, count: int = 50) -> dict:
-    return {"total_chunks": count, "companies": {company: count}}
+from tools.rag_search import run_rag_pipeline, ingest_filings_from_state, RAG_ERROR
 
 
-@patch("tools.rag_search.collection_stats")
-@patch("tools.rag_search.ingest_filings_from_state")
-@patch("tools.rag_search.run_rag_query")
-def test_skip_ingest_when_company_indexed(mock_query, mock_ingest, mock_stats):
-    mock_stats.return_value = _make_stats("Apple Inc.")
-    mock_query.return_value = "SEC FILING RAG RESULTS: ..."
-
-    run_rag_pipeline("revenue growth", [], company="Apple Inc.")
-
-    mock_ingest.assert_not_called()
+# The two 10-K / 10-Q URLs that _parse_edgar_output extracts from the sample.
+_AAPL_10K = "https://www.sec.gov/Archives/edgar/data/320193/000032019324000123/aapl-20240928.htm"
+_AAPL_10Q = "https://www.sec.gov/Archives/edgar/data/320193/000032019325000010/aapl-20241228.htm"
+_EDGAR_RESULT = {"tool_name": "sec_edgar", "success": True, "output": SAMPLE_EDGAR_OUTPUT}
 
 
-@patch("tools.rag_search.collection_stats")
-@patch("tools.rag_search.ingest_filings_from_state")
-@patch("tools.rag_search.run_rag_query")
-def test_skip_ingest_is_case_insensitive(mock_query, mock_ingest, mock_stats):
-    # Stored as "Apple Inc." — query with "apple inc."
-    mock_stats.return_value = _make_stats("Apple Inc.")
-    mock_query.return_value = "SEC FILING RAG RESULTS: ..."
-
-    run_rag_pipeline("revenue growth", [], company="apple inc.")
-
-    mock_ingest.assert_not_called()
-
-
-@patch("tools.rag_search.collection_stats")
-@patch("tools.rag_search.ingest_filings_from_state")
-@patch("tools.rag_search.run_rag_query")
-def test_triggers_ingest_for_new_company(mock_query, mock_ingest, mock_stats):
-    # Apple is indexed but we're asking about Microsoft
-    mock_stats.return_value = _make_stats("Apple Inc.")
+@patch("tools.rag_search.ingest_filings_from_state", new_callable=AsyncMock)
+@patch("tools.rag_search.run_rag_query", new_callable=AsyncMock)
+def test_pipeline_ingests_then_queries(mock_query, mock_ingest):
     mock_ingest.return_value = "RAG INGEST COMPLETE"
     mock_query.return_value = "SEC FILING RAG RESULTS: ..."
 
-    run_rag_pipeline("revenue growth", [], company="Microsoft Corp.")
+    out = asyncio.run(run_rag_pipeline("revenue", [_EDGAR_RESULT], company="Apple Inc."))
 
-    mock_ingest.assert_called_once()
+    mock_ingest.assert_awaited_once()
+    assert "RAG INGEST COMPLETE" in out and "SEC FILING RAG RESULTS" in out
 
 
-@patch("tools.rag_search.collection_stats")
-@patch("tools.rag_search.ingest_filings_from_state")
-@patch("tools.rag_search.run_rag_query")
-def test_ingest_skipped_status_in_output(mock_query, mock_ingest, mock_stats):
-    mock_stats.return_value = _make_stats("Apple Inc.", count=120)
-    mock_query.return_value = "RAG query result here"
+@patch("tools.rag_search.ingest_filings_from_state", new_callable=AsyncMock)
+@patch("tools.rag_search.run_rag_query", new_callable=AsyncMock)
+def test_pipeline_surfaces_query_error_at_position_0(mock_query, mock_ingest):
+    # A query-phase error must be detectable by the node's startswith check —
+    # it must not be buried behind the leading ingest status (issue #1).
+    mock_ingest.return_value = "RAG INGEST: Skipped — all 1 filing(s) already indexed."
+    mock_query.return_value = f"{RAG_ERROR} DBError: connection refused"
 
-    result = run_rag_pipeline("EPS", [], company="Apple Inc.")
+    out = asyncio.run(run_rag_pipeline("EPS", [_EDGAR_RESULT], company="Apple Inc."))
 
-    assert "Skipped" in result
-    assert "120" in result
+    assert out.startswith(RAG_ERROR)
+
+
+@patch("tools.rag_search.ingest_filings_from_state", new_callable=AsyncMock)
+def test_pipeline_never_raises(mock_ingest):
+    # A store/fetch failure returns a tagged error, not an exception (issue #1).
+    mock_ingest.side_effect = RuntimeError("vector store down")
+
+    out = asyncio.run(run_rag_pipeline("EPS", [_EDGAR_RESULT], company="Apple Inc."))
+
+    assert out.startswith(RAG_ERROR)
+
+
+@patch("tools.rag_search.existing_source_urls", new_callable=AsyncMock)
+@patch("tools.rag_search.ingest_chunks", new_callable=AsyncMock)
+@patch("tools.rag_search.fetch_and_chunk")
+def test_ingest_skips_filings_already_stored(mock_fetch, mock_ingest_chunks, mock_urls):
+    # Both parsed filing URLs are already stored → no fetch, no re-embed (issue #3).
+    mock_urls.return_value = {_AAPL_10K, _AAPL_10Q}
+
+    out = asyncio.run(ingest_filings_from_state([_EDGAR_RESULT]))
+
+    mock_fetch.assert_not_called()
+    mock_ingest_chunks.assert_not_awaited()
+    assert "already indexed" in out
+
+
+@patch("tools.rag_search.existing_source_urls", new_callable=AsyncMock)
+@patch("tools.rag_search.ingest_chunks", new_callable=AsyncMock)
+@patch("tools.rag_search.fetch_and_chunk")
+def test_ingest_fetches_filing_not_yet_stored(mock_fetch, mock_ingest_chunks, mock_urls):
+    # Nothing stored → both filings fetched + ingested; a new filing URL is never
+    # false-skipped by a fuzzy company match, and fresh filings are picked up (issue #3).
+    mock_urls.return_value = set()
+    mock_fetch.return_value = [MagicMock()]   # one chunk per filing
+    mock_ingest_chunks.return_value = 1
+
+    out = asyncio.run(ingest_filings_from_state([_EDGAR_RESULT]))
+
+    assert mock_fetch.called
+    mock_ingest_chunks.assert_awaited()
+    assert "RAG INGEST COMPLETE" in out
 
 
 # ── format_rag_results ─────────────────────────────────────────────────────────
