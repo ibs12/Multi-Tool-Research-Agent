@@ -17,8 +17,10 @@ Flags:
 from __future__ import annotations
 
 import argparse
+import asyncio
 import hashlib
 import json
+import os
 import pathlib
 import sys
 import time
@@ -90,11 +92,15 @@ def run_agent(query: str, stream: bool = False, use_cache: bool = False) -> str:
                 print(cached.get("final_report", ""))
             return cached.get("final_report", "")
 
-    state = make_initial_state(query, max_iterations)
+    # "multi" (research → risk → compliance) by default; AGENT_MODE=single runs
+    # the pre-multi-agent baseline on the identical substrate (E5, ADR-0006).
+    agent_mode = os.getenv("AGENT_MODE", "multi")
+    state = make_initial_state(query, max_iterations, agent_mode=agent_mode)
 
     if HAS_RICH:
         console.print(Panel(
-            f"[bold cyan]Financial Research Agent[/bold cyan]\n\n"
+            f"[bold cyan]Financial Research Agent[/bold cyan] "
+            f"[dim]({agent_mode}-agent)[/dim]\n\n"
             f"[white]Query:[/white] {query}",
             border_style="cyan",
         ))
@@ -111,18 +117,64 @@ def run_agent(query: str, stream: bool = False, use_cache: bool = False) -> str:
     return report
 
 
+def _render_escalation(state: dict) -> str:
+    """Escalation is a terminal outcome, not a brief (ADR-0009): render the
+    compliance reasons + evidence summary distinctly so it reads as a deliberate
+    safety decision, never a silently-missing report."""
+    handoff = state.get("handoff", {}) or {}
+    pkg     = handoff.get("escalation", {}) or {}
+    verdict = handoff.get("compliance_verdict", {}) or {}
+    reason  = pkg.get("reason") or "Compliance escalated this query to a human."
+    reasons = pkg.get("unresolved") or verdict.get("reasons") or []
+    gap     = verdict.get("gap_type")
+    ev      = pkg.get("evidence_summary")
+
+    if HAS_RICH:
+        detail = f"[bold]Why:[/bold] {reason}\n"
+        if gap:
+            detail += f"[bold]Gap type:[/bold] {gap}\n"
+        if reasons:
+            detail += "[bold]Unresolved:[/bold]\n" + "\n".join(f"  • {r}" for r in reasons)
+        console.print(Panel(detail.rstrip(),
+                            title="⚠ ESCALATED — no brief produced",
+                            border_style="yellow"))
+        if ev:
+            console.print("[dim]Evidence summary:[/dim]")
+            console.print(ev)
+    lines = ["", "=" * 60,
+             "⚠ ESCALATED — no brief produced (compliance sent this to a human).",
+             "=" * 60, f"Why: {reason}"]
+    if gap:
+        lines.append(f"Gap type: {gap}")
+    if reasons:
+        lines.append("Unresolved:")
+        lines += [f"  • {r}" for r in reasons]
+    if ev:
+        lines += ["", "Evidence summary:", ev]
+    body = "\n".join(lines)
+    if not HAS_RICH:
+        print(body)
+    return body
+
+
 def _run_batch(state: dict) -> str:
     start = time.time()
 
+    # The dispatcher node is async-only, so the graph must be driven via the
+    # async API (langgraph's sync runner rejects async-only nodes). asyncio.run
+    # spins a loop for the whole graph pass; synthesis (sync) runs after.
     if HAS_RICH:
         with Live(Spinner("dots", text=" Agent thinking..."), refresh_per_second=10):
-            result = graph.invoke(state)
-            synthesis = synthesis_node(result)
+            result = asyncio.run(graph.ainvoke(state))
     else:
         print("Running agent...")
-        result = graph.invoke(state)
-        synthesis = synthesis_node(result)
+        result = asyncio.run(graph.ainvoke(state))
 
+    # Escalation is terminal — render the package, do NOT synthesise (ADR-0009).
+    if result.get("termination_reason") == "escalated":
+        return _render_escalation(result)
+
+    synthesis    = synthesis_node(result)
     elapsed      = time.time() - start
     report       = synthesis.get("final_report", "No report generated.")
     tools_called = result.get("tools_called", [])
@@ -161,29 +213,49 @@ def _run_streaming(state: dict) -> str:
 
     final_state = state
 
-    for event in graph.stream(state, stream_mode="updates"):
-        for node_name, node_output in event.items():
-            final_state = {**final_state, **node_output}
+    def _handle(node_name: str, node_output: dict) -> None:
+        nonlocal final_state
+        final_state = {**final_state, **node_output}
 
-            if HAS_RICH:
-                icon = _node_icon(node_name)
-                console.print(f"{icon} [bold]{node_name}[/bold] completed", end="")
+        if HAS_RICH:
+            icon = _node_icon(node_name)
+            console.print(f"{icon} [bold]{node_name}[/bold] completed", end="")
 
-                if node_name == "supervisor":
-                    tools = node_output.get("tools_remaining", [])
-                    console.print(f"  → queuing: [cyan]{tools}[/cyan]")
-                    plan = node_output.get("current_plan", "")
-                    if plan:
-                        console.print(f"   [dim]{plan[:120]}[/dim]")
-                elif node_name == "dispatcher":
-                    results = node_output.get("tool_results", [])
-                    for r in results:
-                        status = "[green]✓[/green]" if r["success"] else "[red]✗[/red]"
-                        console.print(f"\n  {status} {r['tool_name']}: {r['output'][:80]}…")
+            if node_name == "supervisor":
+                tools = node_output.get("tools_remaining", [])
+                console.print(f"  → queuing: [cyan]{tools}[/cyan]")
+                plan = node_output.get("current_plan", "")
+                if plan:
+                    console.print(f"   [dim]{plan[:120]}[/dim]")
+            elif node_name == "dispatcher":
+                results = node_output.get("tool_results", [])
+                for r in results:
+                    status = "[green]✓[/green]" if r["success"] else "[red]✗[/red]"
+                    console.print(f"\n  {status} {r['tool_name']}: {r['output'][:80]}…")
+            elif node_name in ("risk_analyst", "compliance_checker"):
+                ho = node_output.get("handoff", {}) or {}
+                if "risk_assessment" in ho:
+                    console.print(f"  → [magenta]{ho['risk_assessment'].get('risk_summary','')[:90]}[/magenta]")
+                elif "compliance_verdict" in ho:
+                    console.print(f"  → verdict: [bold]{ho['compliance_verdict'].get('verdict','')}[/bold]")
                 else:
                     console.print()
             else:
-                print(f"[{node_name}] completed")
+                console.print()
+        else:
+            print(f"[{node_name}] completed")
+
+    # The dispatcher node is async-only, so drive the graph via the async API.
+    async def _drive() -> None:
+        async for event in graph.astream(state, stream_mode="updates"):
+            for node_name, node_output in event.items():
+                _handle(node_name, node_output)
+
+    asyncio.run(_drive())
+
+    # Escalation is terminal — render the package, do NOT synthesise (ADR-0009).
+    if final_state.get("termination_reason") == "escalated":
+        return _render_escalation(final_state)
 
     if HAS_RICH:
         console.print("\n[dim]Synthesising report...[/dim]")
@@ -209,6 +281,8 @@ def _node_icon(node_name: str) -> str:
         "arxiv":       "📄",
         "sec_edgar":   "🏛️ ",
         "rag_search":  "🔍",
+        "risk_analyst":       "⚠️ ",
+        "compliance_checker": "⚖️ ",
     }.get(node_name, "⚙️ ")
 
 
