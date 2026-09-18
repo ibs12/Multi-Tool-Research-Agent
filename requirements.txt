@@ -3,6 +3,14 @@ langgraph>=0.2.0
 langchain-core>=0.3.0
 anthropic>=0.34.0
 
+# MCP — standalone RAG server + client (Map 1). Pinned: langchain-mcp-adapters
+# is pre-1.0 and its surface still moves; construction is wrapped in
+# agent/mcp_client.py so the future langchain.mcp (MCPAdapter) swap is one file
+# (ADR-0010). fastmcp powers the server (mcp_server/server.py, ADR-0008).
+mcp==1.30.0
+langchain-mcp-adapters==0.3.2
+fastmcp==3.4.7
+
 # Tools
 tavily-python>=0.3.0       # web search
 wikipedia-api>=0.6.0       # Wikipedia lookups
@@ -21,6 +29,8 @@ pydantic>=2.8.0
 torch>=2.0.0                   # CPU-only wheel (~500MB smaller than CUDA)
 sentence-transformers>=3.0.0   # all-MiniLM-L6-v2 embeddings
 asyncpg>=0.29.0                # pgvector backend (async)
+chromadb>=0.5.0                # embedded fallback store (ADR-0005); the MCP
+                              # server's zero-external-deps CI path (ADR-0010)
 
 # Utilities
 python-dotenv>=1.0.0
