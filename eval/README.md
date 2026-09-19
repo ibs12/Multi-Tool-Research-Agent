@@ -21,17 +21,26 @@ the whole pipeline **and** surfaced real findings:
   the bar"** (false-escalate failed) — honest-null handling working (E5.Q5).
 - **Latency:** multi ~5× single (2713s vs 543s for 7 cases).
 
-Two follow-ups this exposed:
-1. **Multi over-escalates period-specific queries** — a Map 1 *calibration*
-   finding (the compliance-checker escalates when period-specific evidence is
-   thin; the E3 "thin-evidence" fog item, made real). Worth tuning before the
-   full run.
-2. **`run_eval.extract_fields` under-matched** (field accuracy read 0.0 even on
-   the single-agent briefs) — the E2.Q3 table parser needs hardening / the
-   LLM-judge fallback before extraction accuracy is trustworthy.
+Three follow-ups this exposed — now addressed:
+1. **Multi over-escalated period-specific queries** → **fixed** (Map 1
+   calibration): `compliance_checker_node` no longer escalates an unresolved
+   `needs-revision` at the hand-back cap — a fixable/minor gap ships a caveated
+   brief; escalation is reserved for the explicit `escalate` verdict. The prompt's
+   escalate bar was sharpened ("do not escalate merely because coverage is
+   incomplete").
+2. **`extract_fields` under-matched** → **fixed** (E2.Q3): the parser dropped the
+   markdown table's outer-pipe empties (the label sat at the wrong index); it now
+   reads the values correctly (Apple FY2023 → 3/4 fields, EPS legitimately
+   omitted). Citation is scored only when the run supplies an accession (briefs
+   cite source *types*), so it reads "not measured" rather than a false 0.
+3. **should-escalate needs live escalation *queries*** → **added**
+   `live_escalation_cases.jsonl`: 10 curated private-company queries (SpaceX,
+   Stripe, OpenAI, …) with no SEC filings, where a defensible live run should
+   escalate. Distinct from the dataset's synthetic label-perturbation cases,
+   which are for *static* scoring of recorded runs, not live runs.
 
-The full 154×2 run is deferred until (1) and (2) are addressed and the
-should-escalate slice is sourced as live escalation *queries* (see below).
+With these in, the full 154×2 headline run is a compute/time decision, not a
+correctness one.
 
 ## Layout
 
