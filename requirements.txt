@@ -11,6 +11,15 @@ mcp==1.30.0
 langchain-mcp-adapters==0.3.2
 fastmcp==3.4.7
 
+# Eval experiment tracking (Map 2 E4 / R1). mlflow-skinny is the client without
+# the server/UI deps; sqlalchemy+alembic give it the local SQLite tracking store
+# (sqlite:///eval/mlflow.db) — offline, no running service. All MLflow use is
+# wrapped in eval/tracking.py so the tracker is swappable, and record_run falls
+# back to local JSON if the store is unavailable.
+mlflow-skinny>=3.0
+SQLAlchemy>=2.0
+alembic>=1.13
+
 # Tools
 tavily-python>=0.3.0       # web search
 wikipedia-api>=0.6.0       # Wikipedia lookups

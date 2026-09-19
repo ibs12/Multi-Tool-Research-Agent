@@ -41,3 +41,10 @@ docker-compose.override.yml
 .langgraph_cache/
 # SEC XBRL response cache (eval) — regenerable, not committed
 eval/.cache/
+
+# eval run outputs (regenerable)
+eval/mlruns/
+eval/runs/
+eval/mlflow.db
+eval/mlartifacts/
+mlruns/
