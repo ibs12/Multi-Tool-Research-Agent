@@ -1,0 +1,24 @@
+{
+  "dataset_version": "e6-2026-09-19",
+  "generated_at": "2026-09-19T04:02:30.088854+00:00",
+  "seed": 20260918,
+  "basket_size": 20,
+  "years": [
+    2019,
+    2024
+  ],
+  "ground_truth": "SEC XBRL companyfacts (accession-pinned; R2)",
+  "revenue_concepts": [
+    "RevenueFromContractWithCustomerExcludingAssessedTax",
+    "Revenues",
+    "SalesRevenueNet"
+  ],
+  "counts": {
+    "correct_extraction": 68,
+    "ambiguous": 28,
+    "missing_conflicting": 28,
+    "should_escalate": 30,
+    "total": 154
+  },
+  "note": "Boundary cases (~18, E6.Q3) are hand-curated in eval/boundary_cases.jsonl and merged at scoring time, not here."
+}

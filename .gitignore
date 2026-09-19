@@ -39,3 +39,5 @@ docker-compose.override.yml
 
 # LangGraph checkpoints
 .langgraph_cache/
+# SEC XBRL response cache (eval) — regenerable, not committed
+eval/.cache/
