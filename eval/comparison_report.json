@@ -1,0 +1,45 @@
+{
+  "dataset_version": "e6-2026-09-19",
+  "n_cases": 7,
+  "n_should_escalate": 2,
+  "capability_claim": {
+    "single_agent_escalations": 0,
+    "multi_agent_escalations": 6,
+    "statement": "The single-agent baseline has no escalation mechanism (0 escalations); the multi-agent pipeline escalated 6. This is an added capability, not a percentage-point improvement."
+  },
+  "quality_claim": {
+    "false_clear_rate": 0.0,
+    "boundary_false_clear_rate": null,
+    "false_escalate_rate": 0.8,
+    "false_clear_by_gap_type": {
+      "unverifiable_citation": 0.0
+    }
+  },
+  "extraction_deltas": {
+    "field_accuracy": {
+      "single": 0.0,
+      "multi": 0.0
+    },
+    "citation_correctness": {
+      "single": null,
+      "multi": null
+    },
+    "fabrication_count": {
+      "single": 0,
+      "multi": 0
+    }
+  },
+  "decision": {
+    "checks": {
+      "boundary_false_clear": null,
+      "false_escalate": false,
+      "no_field_regression": true
+    },
+    "verdict": "null (insufficient data on this subset)"
+  },
+  "cost_latency": {
+    "single_seconds": 542.7,
+    "multi_seconds": 2713.2,
+    "note": "wall-clock; token cost is a follow-up (needs per-call usage capture)."
+  }
+}
