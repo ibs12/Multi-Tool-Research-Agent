@@ -77,13 +77,18 @@ def score_case_extraction(case: dict, actual_fields: dict) -> dict:
             per_field[field] = "wrong"
 
         if expected is None and aval is not None:
-            fabrications += 1                  # a number for an undisclosed field
-        elif expected is not None and aval is not None:
-            citations_total += 1               # a disclosed value the agent reported
-            if cited and src and cited == src:
+            # Unambiguous fabrication: a number invented for an undisclosed field.
+            # (Wrong values on *disclosed* fields are extraction errors — captured
+            # as per_field="wrong" — not fabrications until the E2.Q4
+            # appears-in-retrieved-chunks check can confirm a value appears nowhere.)
+            fabrications += 1
+        elif expected is not None and aval is not None and cited is not None:
+            # Only scoreable when the run actually provides a citation to check.
+            # Briefs cite source *types* not accessions, so this is usually None
+            # (citation_correctness reads as "not measured", not a false 0).
+            citations_total += 1
+            if src and cited == src:
                 citations_ok += 1
-            elif not ok:                       # wrong value with no valid citation
-                fabrications += 1
     return {"per_field": per_field, "fabrications": fabrications,
             "citations_ok": citations_ok, "citations_total": citations_total}
 

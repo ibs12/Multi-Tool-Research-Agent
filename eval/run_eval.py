@@ -54,26 +54,53 @@ def _to_number(text: str, field: str):
     return val
 
 
+def _cells(line: str) -> list[str]:
+    """Split a markdown table row, dropping the empty cells the outer pipes
+    produce so the label lands at index 0 and columns align with the header."""
+    parts = [c.strip() for c in line.split("|")]
+    if parts and parts[0] == "":
+        parts = parts[1:]
+    if parts and parts[-1] == "":
+        parts = parts[:-1]
+    return parts
+
+
+_EMPTY_CELL = {"", "—", "-", "–", "n/a", "N/A"}
+
+
 def extract_fields(brief: str, period: str) -> dict:
-    """Best-effort parse of the Financial Snapshot table: the cell at
-    (row=field, column=period) for each tested row. Returns {field: {value}}."""
-    lines = [ln for ln in brief.splitlines() if "|" in ln]
-    if not lines:
-        return {}
-    header = [c.strip() for c in lines[0].split("|")]
-    try:
-        col = next(i for i, c in enumerate(header) if period.replace("FY", "") in c)
-    except StopIteration:
+    """Best-effort parse of the mandated Financial Snapshot table (E2.Q3): the
+    cell at (row=field, column=period) for each tested row. Returns
+    {field: {value, cited_accession}}. cited_accession stays None — the brief
+    cites source *types* ([SEC Filing]), not accessions; verifying a figure
+    against the retrieved chunks is the E2.Q4 step, layered later. When the table
+    yields nothing, an LLM-judge fallback for prose-only figures is the
+    documented E2.Q3 extension (not wired here)."""
+    table_lines = [ln for ln in brief.splitlines() if ln.count("|") >= 2]
+    want = period.replace("FY", "")
+    header = col = None
+    for ln in table_lines:
+        cells = _cells(ln)
+        for i, c in enumerate(cells):
+            if want in c and ("FY" in c or "20" in c):   # a year column, not a separator
+                header, col = cells, i
+                break
+        if header:
+            break
+    if header is None:
         return {}
     fields = {}
-    for ln in lines[1:]:
-        cells = [c.strip() for c in ln.split("|")]
-        if col >= len(cells):
+    for ln in table_lines:
+        cells = _cells(ln)
+        if cells == header or col >= len(cells) or not cells:
             continue
         label = cells[0].lower()
+        cell = cells[col]
+        if cell in _EMPTY_CELL:
+            continue
         for key, field in _ROW_TO_FIELD.items():
-            if key in label and cells[col] not in ("", "—", "-"):
-                num = _to_number(cells[col], field)
+            if key in label:
+                num = _to_number(cell, field)
                 if num is not None:
                     fields[field] = {"value": num, "cited_accession": None}
     return fields
