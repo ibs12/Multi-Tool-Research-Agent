@@ -24,8 +24,8 @@ def test_live_eval_set_excludes_synthetic_and_includes_live_escalation():
     dataset_synth = [c for c in cases
                      if c["category"] == "should_escalate" and c.get("synthetic")]
     assert not dataset_synth
-    # ...but the curated live escalation QUERIES are present.
-    live = [c for c in cases if c.get("source") == "live-escalation-query"]
+    # ...but the curated live escalation QUERIES (now fictional companies) are present.
+    live = [c for c in cases if str(c.get("source", "")).startswith("live-escalation-query")]
     assert len(live) >= 1
     assert all(c["expected_verdict"] == "escalate" for c in live)
 

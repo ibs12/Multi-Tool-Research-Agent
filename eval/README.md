@@ -90,6 +90,34 @@ legible, the opposite of an opaque hand-labeled set). They are merged with the
 generated set at scoring time and the false-clear rate is reported broken out
 clear-cut vs boundary (E3).
 
+## Known limitation — stale-prior escalation (the SpaceX case)
+
+The first captured escalation run used *"Analyse SpaceX investment outlook"* and
+the compliance-checker escalated it. That looked like a clean win — until it
+wasn't: **SpaceX IPO'd in June 2026 under ticker SPCX.** So the market data the
+agent retrieved (the SPCX quote, IPO, earnings) was *real*, and compliance
+escalated by **dismissing legitimate current data as "fabricated" because it
+conflicted with a training-era belief that SpaceX is private.** It escalated for
+the *wrong reason*.
+
+That is a genuine, distinct failure mode — the model's own prior overriding a
+fresh, legitimate source — different in kind from E1's `missing_conflicting`
+(which is *source-vs-source* disagreement). It is parked in the Map 2 Fog list as
+a candidate future eval case type + a Map 1 calibration ticket (prefer current
+primary-source data over stale knowledge).
+
+Consequences, applied here:
+- **Escalation triggers are now fictional companies, not "private" real ones.**
+  `live_escalation_cases.jsonl` uses invented companies (Zephyr Dynamics, …) with
+  no real existence — a **time-invariant** trigger. A real company's public/
+  private status can silently flip and invalidate the case (exactly what SpaceX
+  did), so that whole category of trigger is retired.
+- **The committed demo fixture (`tests/fixtures/escalation_run.json`) is a
+  fictional-company run**, where the escalation happens for the *right* reason
+  (no verifiable primary source exists). The SpaceX run is NOT used as the demo —
+  a "why did it escalate?" that answers "it distrusted real data" undercuts the
+  safety narrative rather than showing it.
+
 ## Known-pending (honest status)
 
 - The `missing_conflicting` bucket currently sources the **missing** signal
