@@ -2,8 +2,36 @@
 
 Field-level extraction accuracy, false-clear / false-escalate rate, and citation
 correctness for the research agent, with a defensible single-agent-vs-multi-agent
-comparison. This directory currently holds **E6 — case sourcing & ground-truth
-construction**; scoring (E2/E3), tracking (E4), and the before/after (E5) build on it.
+comparison. Holds **E6** (dataset), **E2/E3** (`scoring.py`), **E4** (`tracking.py`,
+`run_eval.py`, two-tier CI), and **E5** (`compare.py`, the before/after).
+
+## E5 before/after — small demo findings (7 cases, `demo_cases.jsonl`)
+
+A live 7-case demo (5 clean large-caps + 2 escalation-trigger queries) validated
+the whole pipeline **and** surfaced real findings:
+
+- **Capability claim holds:** single-agent escalated **0** (no mechanism);
+  multi-agent escalated **6**. An added capability, not a pp delta.
+- **The false-escalate guardrail earned its keep (E3 validation):** multi's
+  false-clear was **0.0** — which alone looks perfect — but its **false-escalate
+  was 0.80** (it escalated 4 of 5 *clean* large-caps on `"FY{year} financial
+  results"` queries). Reporting false-clear *paired with* false-escalate (the E3
+  decision) is exactly what exposes this; false-clear alone would have hidden it.
+- **The pre-registered decision rule correctly returned "mixed / does not clear
+  the bar"** (false-escalate failed) — honest-null handling working (E5.Q5).
+- **Latency:** multi ~5× single (2713s vs 543s for 7 cases).
+
+Two follow-ups this exposed:
+1. **Multi over-escalates period-specific queries** — a Map 1 *calibration*
+   finding (the compliance-checker escalates when period-specific evidence is
+   thin; the E3 "thin-evidence" fog item, made real). Worth tuning before the
+   full run.
+2. **`run_eval.extract_fields` under-matched** (field accuracy read 0.0 even on
+   the single-agent briefs) — the E2.Q3 table parser needs hardening / the
+   LLM-judge fallback before extraction accuracy is trustworthy.
+
+The full 154×2 run is deferred until (1) and (2) are addressed and the
+should-escalate slice is sourced as live escalation *queries* (see below).
 
 ## Layout
 
