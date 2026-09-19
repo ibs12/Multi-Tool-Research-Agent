@@ -206,13 +206,22 @@ def risk_analyst_node(state: AgentState) -> Command:
 # ── Compliance-checker agent (ADR-0007, ADR-0009) ─────────────────────────────
 
 COMPLIANCE_SYSTEM = """You are a compliance checker with authority to block or escalate.
-Judge whether a defensible analyst brief can ship from this evidence:
-- Every financial figure must be traceable to a cited source; no fabricated numbers.
-- Analyst-consensus claims must carry an analyst count.
-- Flag conflicting or missing evidence and any regulatory red flags.
-Verdicts: clear (defensible — ship), needs-revision (a fixable gap — send back to
-research), escalate (not defensibly answerable — a human must decide). Escalate
-rather than ship anything you cannot stand behind. Always call compliance_review."""
+Judge whether a defensible analyst brief can ship from this evidence.
+
+Choose the verdict by SEVERITY, not perfection:
+- clear: the core figures are traceable to sources and internally consistent.
+  Minor gaps — a missing analyst count, an unavailable prior-year line, partial
+  coverage — are acceptable: the brief ships and simply caveats them. A
+  well-known public company with SEC filings and consistent figures should clear.
+- needs-revision: a specific, FIXABLE gap that more research could close.
+- escalate: reserved for when a defensible brief genuinely CANNOT be produced —
+  the core requested figures are unverifiable against any primary source, the
+  sources conflict irreconcilably, or there is a regulatory red flag. Escalate is
+  a strong action; do NOT escalate merely because coverage is incomplete or a few
+  figures lack a citation.
+
+No fabricated numbers; analyst-consensus claims should carry an analyst count.
+Always call compliance_review."""
 
 
 def compliance_checker_node(state: AgentState) -> Command:
@@ -247,7 +256,7 @@ def compliance_checker_node(state: AgentState) -> Command:
         "gap_type": review.get("gap_type") or None,
     }
 
-    # needs-revision below the cap → hand back to research to fill the gap.
+    # needs-revision below the cap → hand back to research once to fill the gap.
     if verdict["verdict"] == "needs-revision" and revisions < MAX_HANDBACKS:
         return Command(
             goto="supervisor",
@@ -257,14 +266,17 @@ def compliance_checker_node(state: AgentState) -> Command:
             },
         )
 
-    # escalate — or an unresolvable needs-revision at the cap → escalate.
-    if verdict["verdict"] == "escalate" or verdict["verdict"] == "needs-revision":
+    # Only an EXPLICIT escalate verdict escalates (genuinely not answerable).
+    if verdict["verdict"] == "escalate":
         return _escalate(state, verdict,
                          summary=review.get("escalation_summary", "")
                          or "; ".join(verdict["reasons"]) or "Unresolved compliance concerns.")
 
-    # clear → END; synthesis runs outside the graph (ADR-0004), triggered by the
-    # entry point seeing a non-escalated terminal state.
+    # clear — OR a needs-revision that couldn't be resolved within the cap. A
+    # needs-revision gap is fixable/minor by definition, so an unfilled one ships
+    # a CAVEATED brief rather than escalating. Escalating unresolved minor gaps
+    # was the E5 over-escalation finding (4/5 clean large-caps wrongly escalated);
+    # escalation is reserved for the explicit verdict.
     return Command(goto=END,
                    update={"handoff": {"compliance_verdict": verdict},
                            "termination_reason": "completed"})

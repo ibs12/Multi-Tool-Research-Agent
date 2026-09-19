@@ -111,13 +111,16 @@ def test_single_agent_mode_skips_the_specialized_agents():
     assert out["termination_reason"] == "completed"   # set by the supervisor
 
 
-def test_needs_revision_hands_back_then_escalates_at_the_cap():
-    # Compliance always says needs-revision; the hand-back cap forces a terminal
-    # escalate rather than looping forever (MAX_HANDBACKS).
+def test_needs_revision_hands_back_then_clears_with_caveat_at_the_cap():
+    # Compliance always says needs-revision; after one hand-back (MAX_HANDBACKS)
+    # the fixable gap remains, so it ships a CAVEATED brief (clear) rather than
+    # over-escalating a minor gap. Escalation is reserved for the explicit verdict
+    # (the E5 over-escalation fix). The loop still terminates.
     out = _run(
         risk={"risk_summary": "ok", "red_flags": [], "evidence_sufficient": True},
         compliance={"verdict": "needs-revision", "reasons": ["thin evidence"],
                     "gap_type": "missing_disclosure"},
     )
-    assert out["termination_reason"] == "escalated"
-    assert out["handoff"]["escalation"]["compliance_reasons"] == ["thin evidence"]
+    assert out["termination_reason"] == "completed"
+    assert "escalation" not in out["handoff"]
+    assert out["handoff"]["compliance_verdict"]["verdict"] == "needs-revision"
