@@ -48,3 +48,6 @@ eval/runs/
 eval/mlflow.db
 eval/mlartifacts/
 mlruns/
+
+# saved run permalinks (local SQLite store)
+.agent_runs/
