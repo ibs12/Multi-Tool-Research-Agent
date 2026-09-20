@@ -373,6 +373,26 @@
     .log-entry.tool.failed { color: var(--red);           border-color: rgba(255,71,87,0.1);  background: rgba(255,71,87,0.04); }
     .log-entry.synthesis   { color: var(--blue);          border-color: rgba(33,150,243,0.1); background: rgba(33,150,243,0.04); }
     .log-entry.system      { color: var(--text-dim); }
+    /* Multi-agent handoffs (risk analyst / compliance checker) */
+    .log-entry.agent          { color: #a78bfa;       border-color: rgba(167,139,250,0.12); background: rgba(167,139,250,0.05); }
+    .log-entry.agent.escalate { color: var(--accent); border-color: rgba(245,166,35,0.25);  background: rgba(245,166,35,0.07); }
+
+    /* Escalation outcome (ADR-0009) — a deliberate safety result, not an error */
+    .escalation-card {
+      border: 1px solid rgba(245,166,35,0.35);
+      background: rgba(245,166,35,0.05);
+      border-radius: 10px;
+      padding: 20px 22px;
+    }
+    .escalation-card .escalation-title { color: var(--accent); font-size: 1.15rem; font-weight: 600; margin: 0 0 6px; }
+    .escalation-card .escalation-lead  { color: var(--text-secondary); margin: 0 0 16px; }
+    .escalation-card h3 { font-size: 0.8rem; text-transform: uppercase; letter-spacing: 0.06em; color: var(--text-secondary); margin: 16px 0 6px; }
+    .escalation-card ul { margin: 0; padding-left: 20px; }
+    .escalation-card li { margin: 4px 0; }
+    .escalation-card details { margin-top: 16px; }
+    .escalation-card summary { cursor: pointer; color: var(--text-secondary); }
+    .escalation-card pre { white-space: pre-wrap; word-break: break-word; font-size: 0.78rem; max-height: 320px; overflow: auto; }
+    .badge.badge-escalated { color: var(--accent); border-color: rgba(245,166,35,0.4); }
 
     .log-icon { flex-shrink: 0; font-size: 12px; }
     .log-text  { flex: 1; }
@@ -1191,14 +1211,23 @@
   }
 
   // ── Activity log ─────────────────────────────────────────────────────
+  // Escape text before it goes into innerHTML. Log lines carry tool previews and
+  // agent reasoning derived from fetched web pages, so they must never be
+  // interpreted as markup.
+  function esc(s) {
+    return String(s ?? '').replace(/[&<>"']/g, c => (
+      { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+  }
+
   function log(type, icon, text, plan = '') {
     const el = document.createElement('div');
     el.className = `log-entry ${type}`;
+    const planText = plan ? `${plan.substring(0, 120)}${plan.length > 120 ? '...' : ''}` : '';
     el.innerHTML = `
-      <span class="log-icon">${icon}</span>
+      <span class="log-icon">${esc(icon)}</span>
       <span class="log-text">
-        ${text}
-        ${plan ? `<span class="log-plan">${plan.substring(0, 120)}${plan.length > 120 ? '...' : ''}</span>` : ''}
+        ${esc(text)}
+        ${planText ? `<span class="log-plan">${esc(planText)}</span>` : ''}
       </span>`;
     const logEl = document.getElementById('activityLog');
     logEl.appendChild(el);
@@ -2477,6 +2506,56 @@
     currentReport = markdown;
   }
 
+  // ── Escalation outcome (ADR-0009) ────────────────────────────────────
+  // The compliance checker refused to stand behind a brief. Render that as a
+  // deliberate safety result; never fall back to the empty state, which would
+  // read as "the app did nothing". All model/web-derived text is escaped.
+  function showEscalation(data, meta) {
+    const pkg = (data && data.package) || {};
+    const verdict = (data && data.verdict) || {};
+    const unresolved = pkg.unresolved || verdict.reasons || [];
+    const reason = pkg.reason ||
+      'The compliance checker could not verify this research well enough to produce a defensible brief.';
+    const gap = verdict.gap_type;
+
+    document.getElementById('loadingState').classList.remove('visible');
+    document.getElementById('emptyState').style.display = 'none';
+
+    const content = document.getElementById('reportContent');
+    content.classList.remove('streaming');
+    content.innerHTML = `
+      <div class="escalation-card">
+        <p class="escalation-title">⚠ Escalated to a human — no brief produced</p>
+        <p class="escalation-lead">The compliance checker would not stand behind a brief built on this
+          evidence, so none was generated. This is a deliberate safety outcome, not an error.</p>
+        <h3>Why</h3>
+        <p>${esc(reason)}</p>
+        ${gap ? `<h3>Gap type</h3><p><code>${esc(gap)}</code></p>` : ''}
+        ${unresolved.length ? `<h3>What a human needs to decide</h3>
+          <ul>${unresolved.map(u => `<li>${esc(u)}</li>`).join('')}</ul>` : ''}
+        ${pkg.evidence_summary ? `<details><summary>Evidence the agents gathered</summary>
+          <pre>${esc(pkg.evidence_summary)}</pre></details>` : ''}
+      </div>`;
+    content.style.display = 'block';
+
+    document.getElementById('reportCompany').textContent = meta.company || 'Escalated';
+    document.getElementById('reportMeta').textContent =
+      `Escalated ${new Date().toLocaleString('en-GB')} · ${meta.elapsed}s`;
+    document.getElementById('reportBadges').innerHTML = `
+      <span class="badge badge-escalated">escalated</span>
+      <span class="badge badge-tools">${Number(meta.tools) || 0} tools</span>
+      <span class="badge badge-time">${esc(meta.elapsed)}s</span>`;
+
+    // Plain-text copy, so "Copy" hands a human the escalation note.
+    currentReport = [
+      `ESCALATED — no brief produced: ${meta.company || ''}`,
+      `Why: ${reason}`,
+      gap ? `Gap type: ${gap}` : '',
+      unresolved.length ? 'Unresolved:\n' + unresolved.map(u => `- ${u}`).join('\n') : '',
+    ].filter(Boolean).join('\n\n');
+    document.getElementById('copyBtn').style.display = 'flex';
+  }
+
   // ── Copy report ──────────────────────────────────────────────────────
   function copyReport() {
     navigator.clipboard.writeText(currentReport).then(() => {
@@ -2575,6 +2654,28 @@
               }
             }
 
+            // Multi-agent handoffs (ADR-0006): research → risk → compliance
+            else if (node === 'risk_analyst') {
+              const flags = data.red_flags || [];
+              document.getElementById('loadingNode').textContent = '⚠️ Risk analyst reviewing the evidence...';
+              log('agent', '⚠️',
+                `Risk analyst → ${flags.length} red flag${flags.length === 1 ? '' : 's'}`,
+                data.risk_summary || '');
+            }
+
+            else if (node === 'compliance_checker') {
+              const verdict = data.verdict || 'unknown';
+              const note = {
+                'clear': 'brief can ship',
+                'needs-revision': 'sending back to research',
+                'escalate': 'escalating to a human',
+              }[verdict] || '';
+              document.getElementById('loadingNode').textContent = `⚖️ Compliance check: ${verdict}`;
+              log(verdict === 'escalate' ? 'agent escalate' : 'agent', '⚖️',
+                `Compliance → ${verdict}${note ? ` (${note})` : ''}`,
+                (data.reasons || []).join('; '));
+            }
+
             else if (node === 'synthesis') {
               document.getElementById('loadingNode').textContent = '✍️ Writing analyst brief...';
               log('synthesis', '✍️', 'Synthesis node generating report');
@@ -2635,6 +2736,18 @@
               elapsed,
             });
             log('synthesis', '✅', `Report complete — ${toolsUsed.size} tools, ${iterCount} iterations, ${elapsed}s`);
+          }
+
+          else if (event === 'escalation') {
+            // Terminal: compliance escalated, no report follows (ADR-0009).
+            const elapsed = ((Date.now() - startTime) / 1000).toFixed(1);
+            showEscalation(data, {
+              company: companyTarget || query,
+              tools: toolsUsed.size,
+              elapsed,
+            });
+            log('agent escalate', '⚠', `Escalated to a human — no brief produced (${elapsed}s)`,
+              (data && data.package && data.package.reason) || '');
           }
 
           else if (event === 'error') {
