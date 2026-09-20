@@ -23,7 +23,6 @@ from __future__ import annotations
 import argparse
 import asyncio
 import os
-import re
 import sys
 from pathlib import Path
 
@@ -34,76 +33,10 @@ from eval import tracking
 from eval.schema import read_jsonl
 from eval.scoring import score_dataset
 
-_ROW_TO_FIELD = {
-    "revenue": "revenue", "net income": "net_income",
-    "eps": "eps", "gross margin": "gross_margin",
-}
-_NUM = re.compile(r"\$?\s*(-?[\d,]+(?:\.\d+)?)\s*(billion|million|b|m|%)?", re.I)
-
-
-def _to_number(text: str, field: str):
-    m = _NUM.search(text)
-    if not m:
-        return None
-    val = float(m.group(1).replace(",", ""))
-    unit = (m.group(2) or "").lower()
-    if unit in ("billion", "b"):
-        val *= 1e9
-    elif unit in ("million", "m"):
-        val *= 1e6
-    return val
-
-
-def _cells(line: str) -> list[str]:
-    """Split a markdown table row, dropping the empty cells the outer pipes
-    produce so the label lands at index 0 and columns align with the header."""
-    parts = [c.strip() for c in line.split("|")]
-    if parts and parts[0] == "":
-        parts = parts[1:]
-    if parts and parts[-1] == "":
-        parts = parts[:-1]
-    return parts
-
-
-_EMPTY_CELL = {"", "—", "-", "–", "n/a", "N/A"}
-
-
-def extract_fields(brief: str, period: str) -> dict:
-    """Best-effort parse of the mandated Financial Snapshot table (E2.Q3): the
-    cell at (row=field, column=period) for each tested row. Returns
-    {field: {value, cited_accession}}. cited_accession stays None — the brief
-    cites source *types* ([SEC Filing]), not accessions; verifying a figure
-    against the retrieved chunks is the E2.Q4 step, layered later. When the table
-    yields nothing, an LLM-judge fallback for prose-only figures is the
-    documented E2.Q3 extension (not wired here)."""
-    table_lines = [ln for ln in brief.splitlines() if ln.count("|") >= 2]
-    want = period.replace("FY", "")
-    header = col = None
-    for ln in table_lines:
-        cells = _cells(ln)
-        for i, c in enumerate(cells):
-            if want in c and ("FY" in c or "20" in c):   # a year column, not a separator
-                header, col = cells, i
-                break
-        if header:
-            break
-    if header is None:
-        return {}
-    fields = {}
-    for ln in table_lines:
-        cells = _cells(ln)
-        if cells == header or col >= len(cells) or not cells:
-            continue
-        label = cells[0].lower()
-        cell = cells[col]
-        if cell in _EMPTY_CELL:
-            continue
-        for key, field in _ROW_TO_FIELD.items():
-            if key in label:
-                num = _to_number(cell, field)
-                if num is not None:
-                    fields[field] = {"value": num, "cited_accession": None}
-    return fields
+# The snapshot-table parser is a product concern (the watchlist reads the same
+# figures to compute deltas, ADR-0012), so it lives in agent/brief_parser.py and
+# is re-exported here under the name this harness has always used.
+from agent.brief_parser import extract_period as extract_fields  # noqa: E402,F401
 
 
 async def run_arm(cases: list[dict], agent_mode: str) -> dict:
