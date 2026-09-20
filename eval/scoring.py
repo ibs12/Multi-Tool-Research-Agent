@@ -31,31 +31,11 @@ from __future__ import annotations
 
 from collections import defaultdict
 
-LEVEL_FIELDS = {"revenue", "net_income"}
-
-
-def field_match(field: str, expected, actual) -> bool:
-    """Per-field-type tolerance match (E2.Q1)."""
-    if expected is None:                       # undisclosed → must report nothing
-        return actual is None
-    if actual is None:                         # omission of a disclosed field
-        return False
-    if isinstance(expected, dict) and "low" in expected:   # forward estimate band
-        try:
-            return expected["low"] <= float(actual) <= expected["high"]
-        except (TypeError, ValueError, KeyError):
-            return False
-    try:
-        e, a = float(expected), float(actual)
-    except (TypeError, ValueError):
-        return expected == actual
-    if field == "gross_margin":
-        return abs(a - e) <= 0.1               # percentage points
-    if field == "eps":
-        return abs(a - e) <= max(0.01, abs(e) * 0.005)
-    if e == 0:
-        return a == 0
-    return abs(a - e) / abs(e) <= 0.005        # level figures, ±0.5%
+# The per-field tolerances are a domain rule, not an eval rule: the watchlist
+# asks the same question ("is this the same number?") to decide whether a change
+# is material (ADR-0012). They live in the product and are re-exported here so
+# the eval's public surface is unchanged.
+from agent.materiality import LEVEL_FIELDS, field_match  # noqa: F401
 
 
 def score_case_extraction(case: dict, actual_fields: dict) -> dict:

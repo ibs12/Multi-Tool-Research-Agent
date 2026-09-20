@@ -58,7 +58,11 @@ load_dotenv()
 from agent.graph import graph
 from agent.nodes.synthesis import synthesis_node, stream_synthesis
 from agent.state import make_initial_state
-from api.run_store import get_run, save_run
+from agent.brief_parser import extract_all_periods
+from agent.deltas import compute_delta
+from api.run_store import (add_to_watchlist, company_key_for, get_run,
+                           list_watchlist, remove_from_watchlist, runs_for_company,
+                           save_run)
 
 import os as _os
 app = FastAPI(
@@ -133,11 +137,19 @@ def health():
 
 def _run_record(query: str, agent_mode: str, result: dict,
                 final_report: str, elapsed: float) -> dict:
-    """The persisted shape of a finished run (brief or escalation)."""
+    """The persisted shape of a finished run (brief or escalation).
+
+    `figures` is the structured read of the brief's Financial Snapshot table —
+    the object deltas are computed over (ADR-0012). Extracted at save time so a
+    later comparison never has to re-parse prose or re-ask a model.
+    """
     handoff = result.get("handoff", {}) or {}
+    company = result.get("company_target", "")
     return {
         "query": query,
-        "company_target": result.get("company_target", ""),
+        "company_target": company,
+        "company_key": company_key_for(company or query),
+        "figures": extract_all_periods(final_report) if final_report else {},
         "agent_mode": agent_mode,
         "termination_reason": result.get("termination_reason"),
         "final_report": final_report,
@@ -190,6 +202,70 @@ async def research(req: ResearchRequest):
         escalation=(result.get("handoff", {}) or {}).get("escalation"),
         run_id=run_id,
     )
+
+
+# ── Watchlist ─────────────────────────────────────────────────────────────────
+# Companies tracked over time. A watchlist is not a portfolio: no share counts,
+# no cost basis (CONTEXT.md). Single hardcoded owner, no auth.
+
+class WatchRequest(BaseModel):
+    name: str = Field(..., min_length=1, max_length=200, description="Company name")
+    cik: int | None = Field(default=None, description="SEC CIK — preferred identity")
+    ticker: str | None = Field(default=None, max_length=10)
+
+
+@app.get("/watchlist", tags=["Watchlist"])
+async def read_watchlist():
+    """The tracked companies, each with its latest run and what changed."""
+    companies = await list_watchlist()
+    out = []
+    for company in companies:
+        runs = await runs_for_company(company["company_key"], limit=2)
+        latest = runs[0] if runs else None
+        delta = compute_delta(runs[1], runs[0]) if len(runs) >= 2 else None
+        out.append({
+            **company,
+            "latest_run": ({"id": latest.get("id"),
+                            "created_at": latest.get("created_at"),
+                            "termination_reason": latest.get("termination_reason"),
+                            "verdict": (latest.get("compliance_verdict") or {}).get("verdict"),
+                            "figures": latest.get("figures") or {}} if latest else None),
+            "delta": delta,
+        })
+    return out
+
+
+@app.post("/watchlist", tags=["Watchlist"])
+async def create_watch(req: WatchRequest):
+    entry = await add_to_watchlist(req.name, req.cik, req.ticker)
+    if not entry:
+        raise HTTPException(status_code=503, detail="Watchlist storage unavailable")
+    return entry
+
+
+@app.delete("/watchlist/{company_key}", tags=["Watchlist"])
+async def delete_watch(company_key: str):
+    if not await remove_from_watchlist(company_key):
+        raise HTTPException(status_code=503, detail="Watchlist storage unavailable")
+    return {"removed": company_key}
+
+
+@app.get("/companies/{company_key}", tags=["Watchlist"])
+async def read_company(company_key: str, limit: int = 10):
+    """A company's run timeline plus the delta between its two most recent runs."""
+    runs = await runs_for_company(company_key, limit=limit)
+    if not runs:
+        raise HTTPException(status_code=404, detail="No runs for this company")
+    return {
+        "company_key": company_key,
+        "company_target": runs[0].get("company_target"),
+        "delta": compute_delta(runs[1], runs[0]) if len(runs) >= 2 else None,
+        "runs": [{"id": r.get("id"), "created_at": r.get("created_at"),
+                  "agent_mode": r.get("agent_mode"),
+                  "termination_reason": r.get("termination_reason"),
+                  "verdict": (r.get("compliance_verdict") or {}).get("verdict"),
+                  "figures": r.get("figures") or {}} for r in runs],
+    }
 
 
 @app.get("/runs/{run_id}", tags=["Research"])
