@@ -7,6 +7,9 @@
   <link rel="preconnect" href="https://fonts.googleapis.com" />
   <link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@300;400;500;600&family=IBM+Plex+Sans:wght@300;400;500;600&display=swap" rel="stylesheet" />
   <script src="https://cdnjs.cloudflare.com/ajax/libs/marked/9.1.6/marked.min.js"></script>
+  <!-- The brief is LLM output that quotes scraped web pages, and marked passes raw
+       HTML straight through — so it is sanitised before it ever reaches innerHTML. -->
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/dompurify/3.0.8/purify.min.js"></script>
   <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
 
   <style>
@@ -217,6 +220,30 @@
       align-items: center;
       gap: 8px;
     }
+
+    /* Pipeline toggle: single- vs multi-agent, switchable per run */
+    .mode-control { display: flex; align-items: center; gap: 8px; }
+    .mode-toggle {
+      display: inline-flex;
+      background: var(--bg-input);
+      border: 1px solid var(--border-light);
+      border-radius: 3px;
+      overflow: hidden;
+    }
+    .mode-btn {
+      font-family: var(--mono);
+      font-size: 10px;
+      letter-spacing: 0.04em;
+      padding: 4px 10px;
+      background: transparent;
+      color: var(--text-secondary);
+      border: none;
+      cursor: pointer;
+      transition: background 0.15s, color 0.15s;
+    }
+    .mode-btn:hover { color: var(--text); }
+    .mode-btn.active { background: var(--accent); color: #0a0c0f; font-weight: 600; }
+    .mode-btn:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; }
 
     .iter-label {
       font-family: var(--mono);
@@ -556,6 +583,14 @@
       color: var(--accent);
       min-height: 18px;
       transition: opacity 0.2s;
+    }
+
+    .loading-eta {
+      font-family: var(--mono);
+      font-size: 11px;
+      color: var(--text-secondary);
+      margin-top: 6px;
+      min-height: 16px;
     }
 
     /* ── Markdown styles ───────────────────────────────────────────── */
@@ -1096,6 +1131,17 @@
         rows="3"
       ></textarea>
       <div class="query-footer">
+        <div class="mode-control" role="group" aria-label="Agent pipeline">
+          <span class="iter-label">Pipeline</span>
+          <div class="mode-toggle">
+            <button type="button" class="mode-btn active" id="modeMulti" aria-pressed="true"
+              title="Research → risk analyst → compliance checker. Compliance can send work back or escalate to a human instead of shipping a brief."
+              onclick="setAgentMode('multi')">Multi-agent</button>
+            <button type="button" class="mode-btn" id="modeSingle" aria-pressed="false"
+              title="Research → brief. No risk or compliance review; always produces a report."
+              onclick="setAgentMode('single')">Single</button>
+          </div>
+        </div>
         <div class="iter-control">
           <span class="iter-label">Max iterations</span>
           <select class="iter-select" id="iterSelect">
@@ -1173,7 +1219,8 @@
           <div class="loading-bar"></div>
         </div>
         <div class="loading-text">RESEARCHING</div>
-        <div class="loading-node" id="loadingNode">Initialising agent...</div>
+        <div class="loading-node" id="loadingNode" role="status" aria-live="polite">Initialising agent...</div>
+        <div class="loading-eta" id="loadingEta"></div>
       </div>
 
       <!-- Report content -->
@@ -1188,6 +1235,24 @@
 
   // ── State ───────────────────────────────────────────────────────────
   let currentReport = '';
+
+  // ── Pipeline mode (single- vs multi-agent) ───────────────────────────
+  // The API accepts agent_mode per request, so the two pipelines can be
+  // compared live without redeploying. Remembered across visits.
+  let agentMode = 'multi';
+  try { agentMode = localStorage.getItem('agentMode') === 'single' ? 'single' : 'multi'; } catch {}
+
+  function setAgentMode(mode) {
+    agentMode = mode === 'single' ? 'single' : 'multi';
+    try { localStorage.setItem('agentMode', agentMode); } catch {}
+    const multi = document.getElementById('modeMulti');
+    const single = document.getElementById('modeSingle');
+    if (!multi || !single) return;
+    multi.classList.toggle('active', agentMode === 'multi');
+    single.classList.toggle('active', agentMode === 'single');
+    multi.setAttribute('aria-pressed', String(agentMode === 'multi'));
+    single.setAttribute('aria-pressed', String(agentMode === 'single'));
+  }
   let reportBuffer = '';
   let currentForecast = null;   // structured outlook from the `forecast` SSE event
   let startTime = null;
@@ -1217,6 +1282,17 @@
   function esc(s) {
     return String(s ?? '').replace(/[&<>"']/g, c => (
       { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+  }
+
+  // Markdown → HTML for the brief. The brief is model output that quotes scraped
+  // web pages, and marked passes raw HTML through, so the result is always
+  // sanitised. If the sanitiser failed to load we degrade to plain text rather
+  // than inject unsanitised HTML.
+  function renderMarkdown(md) {
+    const source = String(md ?? '');
+    if (!window.DOMPurify) return `<pre class="md-fallback">${esc(source)}</pre>`;
+    const html = window.marked ? marked.parse(source) : esc(source);
+    return DOMPurify.sanitize(html);
   }
 
   function log(type, icon, text, plan = '') {
@@ -2441,11 +2517,41 @@
   }
 
   // ── UI state helpers ─────────────────────────────────────────────────
+  // ── Wait-state feedback ──────────────────────────────────────────────
+  // A multi-agent run is minutes, not seconds (research loop → risk analyst →
+  // compliance, sometimes with a hand-back). Show elapsed time against what's
+  // normal so a long run reads as working, not hung.
+  let etaTimer = null;
+
+  function startEtaTimer() {
+    stopEtaTimer();
+    const el = document.getElementById('loadingEta');
+    if (!el) return;
+    const usual = agentMode === 'multi' ? '5–7 min' : '1–2 min';
+    const overrunSec = agentMode === 'multi' ? 8 * 60 : 3 * 60;
+    const tick = () => {
+      const s = Math.floor((Date.now() - startTime) / 1000);
+      const clock = `${Math.floor(s / 60)}:${String(s % 60).padStart(2, '0')}`;
+      el.textContent = s > overrunSec
+        ? `${clock} elapsed · longer than usual — still streaming, not stuck`
+        : `${clock} elapsed · ${agentMode === 'multi' ? 'multi-agent' : 'single-agent'} runs usually take ${usual}`;
+    };
+    tick();
+    etaTimer = setInterval(tick, 1000);
+  }
+
+  function stopEtaTimer() {
+    if (etaTimer) { clearInterval(etaTimer); etaTimer = null; }
+    const el = document.getElementById('loadingEta');
+    if (el) el.textContent = '';
+  }
+
   function setLoading(on) {
     const btn = document.getElementById('runBtn');
     btn.disabled = on;
     btn.classList.toggle('loading', on);
     document.getElementById('loadingState').classList.toggle('visible', on);
+    if (!on) stopEtaTimer();
 
     if (on) {
       // New run starting: reset all panels to loading state
@@ -2453,6 +2559,7 @@
       document.getElementById('reportContent').style.display = 'none';
       document.getElementById('copyBtn').style.display = 'none';
       startTime = Date.now();
+      startEtaTimer();
     } else if (!currentReport) {
       // Run finished but no report was produced: show empty state
       document.getElementById('emptyState').style.display = '';
@@ -2464,9 +2571,9 @@
     document.getElementById('loadingState').classList.remove('visible');
     document.getElementById('emptyState').style.display = 'none';
 
-    // Render markdown
+    // Render markdown (sanitised — see renderMarkdown)
     const content = document.getElementById('reportContent');
-    content.innerHTML = marked.parse(markdown);
+    content.innerHTML = renderMarkdown(markdown);
     content.style.display = 'block';
 
     // Render financial charts, then post-process tables.
@@ -2593,7 +2700,7 @@
       const response = await fetch(`${API_BASE}/research/stream`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ query, max_iterations: maxIter }),
+        body: JSON.stringify({ query, max_iterations: maxIter, agent_mode: agentMode }),
       });
 
       if (!response.ok) throw new Error(`Server error: ${response.status}`);
@@ -2773,6 +2880,9 @@
   document.getElementById('queryInput').addEventListener('keydown', e => {
     if (e.key === 'Enter' && (e.metaKey || e.ctrlKey)) runResearch();
   });
+
+  // Reflect the remembered pipeline choice in the toggle.
+  setAgentMode(agentMode);
 
   // ── Check server health on load ──────────────────────────────────────
   fetch(`${API_BASE}/health`)
