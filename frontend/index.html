@@ -1195,6 +1195,10 @@
       </div>
       <div style="display:flex;gap:12px;align-items:center">
         <div class="report-badges" id="reportBadges"></div>
+        <button class="copy-btn" id="shareBtn" onclick="shareRun()" style="display:none"
+          title="Copy a permalink to this run">
+          🔗 Share
+        </button>
         <button class="copy-btn" id="copyBtn" onclick="copyReport()" style="display:none">
           ⎘ Copy Report
         </button>
@@ -1235,6 +1239,7 @@
 
   // ── State ───────────────────────────────────────────────────────────
   let currentReport = '';
+  let currentRunId = null;   // permalink id of the run on screen, if saved
 
   // ── Pipeline mode (single- vs multi-agent) ───────────────────────────
   // The API accepts agent_mode per request, so the two pipelines can be
@@ -2663,6 +2668,55 @@
     document.getElementById('copyBtn').style.display = 'flex';
   }
 
+  // ── Permalinks ───────────────────────────────────────────────────────
+  // A finished run is persisted server-side and addressable as ?run=<id>, so a
+  // brief (or an escalation) can be shared and revisited instead of vanishing
+  // with the tab. Anyone with the link can read it — there is no auth.
+  function shareRun() {
+    if (!currentRunId) return;
+    const base = location.protocol.startsWith('http')
+      ? `${location.origin}${location.pathname}`
+      : `${API_BASE}/`;
+    const url = `${base}?run=${encodeURIComponent(currentRunId)}`;
+    const btn = document.getElementById('shareBtn');
+    navigator.clipboard.writeText(url).then(() => {
+      btn.textContent = '✓ Link copied';
+      btn.classList.add('copied');
+      setTimeout(() => { btn.textContent = '🔗 Share'; btn.classList.remove('copied'); }, 2000);
+    }).catch(() => { window.prompt('Copy this link:', url); });
+  }
+
+  async function loadSavedRun(id) {
+    log('system', '◦', `Loading saved run ${id}…`);
+    try {
+      const resp = await fetch(`${API_BASE}/runs/${encodeURIComponent(id)}`);
+      if (!resp.ok) throw new Error(resp.status === 404 ? 'not found' : `server error ${resp.status}`);
+      const rec = await resp.json();
+      currentRunId = id;
+      currentForecast = rec.forecast || null;
+      const meta = {
+        company: rec.company_target || rec.query || 'Saved run',
+        tools: (rec.tools_called || []).length,
+        iters: rec.iteration_count || 0,
+        elapsed: rec.elapsed_seconds ?? 0,
+      };
+      if (rec.termination_reason === 'escalated') {
+        showEscalation({ package: rec.escalation || {}, verdict: rec.compliance_verdict || {} }, meta);
+      } else {
+        showReport(rec.final_report || '', meta);
+      }
+      const when = rec.created_at ? new Date(rec.created_at).toLocaleString('en-GB') : '';
+      document.getElementById('reportMeta').textContent =
+        `Saved run · ${when} · ${rec.agent_mode || '?'}-agent`;
+      document.getElementById('queryInput').value = rec.query || '';
+      document.getElementById('shareBtn').style.display = 'flex';
+      log('system', '✓', `Loaded saved run (${rec.agent_mode || '?'}-agent)`);
+    } catch (e) {
+      log('system', '✗', `Could not load run ${id}: ${e.message}`);
+      document.getElementById('emptyState').style.display = '';
+    }
+  }
+
   // ── Copy report ──────────────────────────────────────────────────────
   function copyReport() {
     navigator.clipboard.writeText(currentReport).then(() => {
@@ -2689,6 +2743,8 @@
     currentReport = '';
     reportBuffer = '';
     currentForecast = null;
+    currentRunId = null;
+    document.getElementById('shareBtn').style.display = 'none';
 
     log('system', '▶', `Starting research: "${query.substring(0, 60)}..."`);
 
@@ -2857,6 +2913,15 @@
               (data && data.package && data.package.reason) || '');
           }
 
+          else if (event === 'saved') {
+            // The run was persisted — it now has a permalink worth sharing.
+            currentRunId = (data && data.run_id) || null;
+            if (currentRunId) {
+              document.getElementById('shareBtn').style.display = 'flex';
+              log('system', '🔗', `Saved — permalink ready (${currentRunId})`);
+            }
+          }
+
           else if (event === 'error') {
             log('system', '✗', `Error: ${data}`);
             setLoading(false);
@@ -2883,6 +2948,10 @@
 
   // Reflect the remembered pipeline choice in the toggle.
   setAgentMode(agentMode);
+
+  // ?run=<id> → replay a saved run read-only instead of starting a new one.
+  const _runParam = new URLSearchParams(location.search).get('run');
+  if (_runParam) loadSavedRun(_runParam);
 
   // ── Check server health on load ──────────────────────────────────────
   fetch(`${API_BASE}/health`)

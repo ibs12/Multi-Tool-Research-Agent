@@ -18,6 +18,8 @@ SSE event types:
                     (terminal — no report follows; ADR-0009)
   report_chunk    — one synthesis token    {"event","data": "<text>"}
   report          — full final report      {"event","data": "<markdown>"}
+  saved           — run persisted          {"event","data": {"run_id": "<id>"}}
+                    (permalink: GET /runs/{run_id})
   error           — something went wrong   {"event","data": "<message>"}
   done            — stream closed          {"event"}
 
@@ -56,6 +58,7 @@ load_dotenv()
 from agent.graph import graph
 from agent.nodes.synthesis import synthesis_node, stream_synthesis
 from agent.state import make_initial_state
+from api.run_store import get_run, save_run
 
 import os as _os
 app = FastAPI(
@@ -111,6 +114,8 @@ class ResearchResponse(BaseModel):
     termination_reason: str | None = None
     # Populated instead of final_report when compliance escalated (ADR-0009).
     escalation: dict | None = None
+    # Permalink id — GET /runs/{run_id} replays this run. None if saving failed.
+    run_id: str | None = None
 
 
 def _resolve_agent_mode(req: "ResearchRequest") -> str:
@@ -126,22 +131,51 @@ def health():
 
 # ── Batch endpoint ────────────────────────────────────────────────────────────
 
+def _run_record(query: str, agent_mode: str, result: dict,
+                final_report: str, elapsed: float) -> dict:
+    """The persisted shape of a finished run (brief or escalation)."""
+    handoff = result.get("handoff", {}) or {}
+    return {
+        "query": query,
+        "company_target": result.get("company_target", ""),
+        "agent_mode": agent_mode,
+        "termination_reason": result.get("termination_reason"),
+        "final_report": final_report,
+        "escalation": handoff.get("escalation"),
+        "compliance_verdict": handoff.get("compliance_verdict"),
+        "risk_assessment": handoff.get("risk_assessment"),
+        "forecast": result.get("forecast"),
+        "tools_called": result.get("tools_called", []),
+        "iteration_count": result.get("iteration_count", 0),
+        "elapsed_seconds": elapsed,
+        "model": _os.getenv("CLAUDE_MODEL", "claude-opus-4-8"),
+    }
+
+
 @app.post("/research", response_model=ResearchResponse, tags=["Research"])
-def research(req: ResearchRequest):
+async def research(req: ResearchRequest):
     """Run the full agent and return the complete report as JSON."""
     start = time.time()
+    agent_mode = _resolve_agent_mode(req)
     state = make_initial_state(req.query, max_iterations=req.max_iterations,
-                               agent_mode=_resolve_agent_mode(req))
+                               agent_mode=agent_mode)
 
     try:
-        result = graph.invoke(state)
+        # The dispatcher node is async-only, so the graph must be driven through
+        # the async API; langgraph's sync runner rejects it.
+        result = await graph.ainvoke(state)
         # Escalation is terminal — no brief (ADR-0009).
         if result.get("termination_reason") == "escalated":
             synthesis = {"final_report": "", "error": None}
         else:
-            synthesis = synthesis_node(result)
+            # Blocking Anthropic call — keep it off the event loop.
+            synthesis = await asyncio.to_thread(synthesis_node, result)
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
+
+    elapsed = round(time.time() - start, 2)
+    run_id = await save_run(_run_record(
+        req.query, agent_mode, result, synthesis.get("final_report", ""), elapsed))
 
     return ResearchResponse(
         query=req.query,
@@ -149,12 +183,25 @@ def research(req: ResearchRequest):
         final_report=synthesis.get("final_report", ""),
         tools_called=result.get("tools_called", []),
         iteration_count=result.get("iteration_count", 0),
-        elapsed_seconds=round(time.time() - start, 2),
+        elapsed_seconds=elapsed,
         error=synthesis.get("error"),
         forecast=result.get("forecast"),
         termination_reason=result.get("termination_reason"),
         escalation=(result.get("handoff", {}) or {}).get("escalation"),
+        run_id=run_id,
     )
+
+
+@app.get("/runs/{run_id}", tags=["Research"])
+async def read_run(run_id: str):
+    """Replay a saved run — the permalink behind a shared report.
+
+    Anyone with the (unguessable) id can read it; there is no auth.
+    """
+    record = await get_run(run_id)
+    if not record:
+        raise HTTPException(status_code=404, detail="Run not found")
+    return record
 
 
 # ── Streaming SSE endpoint ────────────────────────────────────────────────────
@@ -184,8 +231,10 @@ async def research_stream(req: ResearchRequest):
 
 async def _stream_generator(req: ResearchRequest) -> AsyncGenerator[str, None]:
     async with _semaphore:
+        started = time.time()
+        agent_mode = _resolve_agent_mode(req)
         initial_state = make_initial_state(req.query, req.max_iterations,
-                                           agent_mode=_resolve_agent_mode(req))
+                                           agent_mode=agent_mode)
 
         # ── Phase 1: native async graph streaming ─────────────────────────────
         # graph.astream() awaits async nodes directly and runs sync nodes
@@ -217,6 +266,10 @@ async def _stream_generator(req: ResearchRequest) -> AsyncGenerator[str, None]:
                     "verdict": handoff.get("compliance_verdict", {}),
                 },
             })
+            run_id = await save_run(_run_record(
+                req.query, agent_mode, final_state, "", round(time.time() - started, 2)))
+            if run_id:
+                yield _sse({"event": "saved", "data": {"run_id": run_id}})
             yield _sse({"event": "done"})
             return
 
@@ -268,6 +321,11 @@ async def _stream_generator(req: ResearchRequest) -> AsyncGenerator[str, None]:
 
         if full_report:
             yield _sse({"event": "report", "data": full_report})
+            run_id = await save_run(_run_record(
+                req.query, agent_mode, final_state, full_report,
+                round(time.time() - started, 2)))
+            if run_id:
+                yield _sse({"event": "saved", "data": {"run_id": run_id}})
         else:
             yield _sse({"event": "error", "data": "No report generated — check server logs."})
 
