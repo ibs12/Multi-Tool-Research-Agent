@@ -60,9 +60,9 @@ from agent.nodes.synthesis import synthesis_node, stream_synthesis
 from agent.state import make_initial_state
 from agent.brief_parser import extract_all_periods
 from agent.deltas import compute_delta
-from api.run_store import (add_to_watchlist, company_key_for, get_run,
-                           list_watchlist, remove_from_watchlist, runs_for_company,
-                           save_run)
+from api.run_store import (add_to_watchlist, build_run_record, company_key_for,
+                           get_run, list_watchlist, recent_sweeps,
+                           remove_from_watchlist, runs_for_company, save_run)
 
 import os as _os
 app = FastAPI(
@@ -135,33 +135,11 @@ def health():
 
 # ── Batch endpoint ────────────────────────────────────────────────────────────
 
+# The persisted run shape is shared with the refresh worker, so a cron-produced
+# run is indistinguishable from one triggered by hand.
 def _run_record(query: str, agent_mode: str, result: dict,
                 final_report: str, elapsed: float) -> dict:
-    """The persisted shape of a finished run (brief or escalation).
-
-    `figures` is the structured read of the brief's Financial Snapshot table —
-    the object deltas are computed over (ADR-0012). Extracted at save time so a
-    later comparison never has to re-parse prose or re-ask a model.
-    """
-    handoff = result.get("handoff", {}) or {}
-    company = result.get("company_target", "")
-    return {
-        "query": query,
-        "company_target": company,
-        "company_key": company_key_for(company or query),
-        "figures": extract_all_periods(final_report) if final_report else {},
-        "agent_mode": agent_mode,
-        "termination_reason": result.get("termination_reason"),
-        "final_report": final_report,
-        "escalation": handoff.get("escalation"),
-        "compliance_verdict": handoff.get("compliance_verdict"),
-        "risk_assessment": handoff.get("risk_assessment"),
-        "forecast": result.get("forecast"),
-        "tools_called": result.get("tools_called", []),
-        "iteration_count": result.get("iteration_count", 0),
-        "elapsed_seconds": elapsed,
-        "model": _os.getenv("CLAUDE_MODEL", "claude-opus-4-8"),
-    }
+    return build_run_record(query, agent_mode, result, final_report, elapsed)
 
 
 @app.post("/research", response_model=ResearchResponse, tags=["Research"])
@@ -266,6 +244,16 @@ async def read_company(company_key: str, limit: int = 10):
                   "verdict": (r.get("compliance_verdict") or {}).get("verdict"),
                   "figures": r.get("figures") or {}} for r in runs],
     }
+
+
+@app.get("/sweeps", tags=["Watchlist"])
+async def read_sweeps(limit: int = 5):
+    """Recent watchlist sweeps — the evidence the refresh worker is alive.
+
+    A sweep is recorded even when it changed nothing, so an empty change feed
+    can be told apart from a dead cron (ADR-0011).
+    """
+    return await recent_sweeps(limit=limit)
 
 
 @app.get("/runs/{run_id}", tags=["Research"])
