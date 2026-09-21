@@ -38,6 +38,7 @@ from pathlib import Path
 
 _RUNS = "agent_runs"
 _WATCH = "watchlist"
+_SWEEPS = "watch_sweeps"
 _SQLITE_PATH = Path(__file__).resolve().parent.parent / ".agent_runs" / "runs.db"
 
 DEFAULT_OWNER = os.getenv("OWNER_ID", "me")
@@ -113,6 +114,21 @@ async def _pg_ensure_schema() -> None:
                 created_at  TIMESTAMPTZ NOT NULL DEFAULT now(),
                 UNIQUE (owner_id, company_key)
             )""")
+        await conn.execute(
+            f"ALTER TABLE {_WATCH} ADD COLUMN IF NOT EXISTS last_seen_accession TEXT")
+        # A sweep is recorded even when it changes nothing, so silence is
+        # distinguishable from a dead cron (ADR-0011).
+        await conn.execute(f"""
+            CREATE TABLE IF NOT EXISTS {_SWEEPS} (
+                id          TEXT PRIMARY KEY,
+                owner_id    TEXT NOT NULL,
+                started_at  TIMESTAMPTZ NOT NULL,
+                finished_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+                checked     INTEGER NOT NULL DEFAULT 0,
+                refreshed   INTEGER NOT NULL DEFAULT 0,
+                notified    INTEGER NOT NULL DEFAULT 0,
+                error       TEXT
+            )""")
 
 
 async def _pg(query: str, *args, fetch: str = "none"):
@@ -167,6 +183,18 @@ def _sqlite_ensure_schema_sync() -> None:
                 created_at  TEXT NOT NULL,
                 UNIQUE (owner_id, company_key)
             )""")
+        _sqlite_add_column(conn, _WATCH, "last_seen_accession", "TEXT")
+        conn.execute(f"""
+            CREATE TABLE IF NOT EXISTS {_SWEEPS} (
+                id          TEXT PRIMARY KEY,
+                owner_id    TEXT NOT NULL,
+                started_at  TEXT NOT NULL,
+                finished_at TEXT NOT NULL,
+                checked     INTEGER NOT NULL DEFAULT 0,
+                refreshed   INTEGER NOT NULL DEFAULT 0,
+                notified    INTEGER NOT NULL DEFAULT 0,
+                error       TEXT
+            )""")
 
 
 def _sqlite_save_sync(run_id: str, record: dict) -> None:
@@ -214,7 +242,7 @@ def _sqlite_watch_write_sync(op: str, **kw):
 def _sqlite_watch_list_sync(owner: str) -> list[dict]:
     with _sqlite_conn() as conn:
         rows = conn.execute(
-            f"""SELECT id, company_key, name, cik, ticker, created_at
+            f"""SELECT id, company_key, name, cik, ticker, created_at, last_seen_accession
                 FROM {_WATCH} WHERE owner_id = ? ORDER BY name""", (owner,)).fetchall()
     return [dict(r) for r in rows]
 
@@ -347,10 +375,132 @@ async def list_watchlist(owner: str | None = None) -> list[dict]:
         await _ensure_schema()
         if _pg_url():
             rows = await _pg(
-                f"""SELECT id, company_key, name, cik, ticker, created_at
+                f"""SELECT id, company_key, name, cik, ticker, created_at, last_seen_accession
                     FROM {_WATCH} WHERE owner_id = $1 ORDER BY name""",
                 owner, fetch="all")
             return [dict(r) for r in rows]
         return await asyncio.to_thread(_sqlite_watch_list_sync, owner)
     except Exception:
         return []
+
+
+def _sqlite_set_last_seen_sync(owner: str, key: str, accession: str | None) -> None:
+    with _sqlite_conn() as conn:
+        conn.execute(f"UPDATE {_WATCH} SET last_seen_accession = ? "
+                     f"WHERE owner_id = ? AND company_key = ?", (accession, owner, key))
+
+
+def _sqlite_record_sweep_sync(row: dict) -> None:
+    with _sqlite_conn() as conn:
+        conn.execute(
+            f"""INSERT INTO {_SWEEPS}
+                (id, owner_id, started_at, finished_at, checked, refreshed, notified, error)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
+            (row["id"], row["owner_id"], row["started_at"], row["finished_at"],
+             row["checked"], row["refreshed"], row["notified"], row["error"]))
+
+
+def _sqlite_recent_sweeps_sync(owner: str, limit: int) -> list[dict]:
+    with _sqlite_conn() as conn:
+        rows = conn.execute(
+            f"""SELECT * FROM {_SWEEPS} WHERE owner_id = ?
+                ORDER BY started_at DESC LIMIT ?""", (owner, limit)).fetchall()
+    return [dict(r) for r in rows]
+
+
+async def set_last_seen(company_key: str, accession: str | None,
+                        owner: str | None = None) -> bool:
+    """Record the newest accession observed for a company.
+
+    Updated on every sweep, refresh or not — it is the baseline the next sweep
+    compares against, so letting it drift would make a Signal fire forever.
+    """
+    owner = owner or DEFAULT_OWNER
+    try:
+        await _ensure_schema()
+        if _pg_url():
+            await _pg(f"UPDATE {_WATCH} SET last_seen_accession = $1 "
+                      f"WHERE owner_id = $2 AND company_key = $3",
+                      accession, owner, company_key)
+        else:
+            await asyncio.to_thread(_sqlite_set_last_seen_sync, owner, company_key, accession)
+        return True
+    except Exception:
+        return False
+
+
+async def record_sweep(checked: int, refreshed: int, notified: int,
+                       started_at: str | None = None, error: str | None = None,
+                       owner: str | None = None) -> str | None:
+    """Record that a sweep ran — including a sweep that changed nothing.
+
+    Without this, "no alerts this week" is ambiguous between "nothing happened"
+    and "the cron is dead", and a tool relied on for money decisions cannot
+    carry that ambiguity (ADR-0011).
+    """
+    owner = owner or DEFAULT_OWNER
+    now = datetime.now(timezone.utc).isoformat()
+    row = {"id": new_run_id(), "owner_id": owner, "started_at": started_at or now,
+           "finished_at": now, "checked": checked, "refreshed": refreshed,
+           "notified": notified, "error": error}
+    try:
+        await _ensure_schema()
+        if _pg_url():
+            await _pg(f"""INSERT INTO {_SWEEPS}
+                          (id, owner_id, started_at, finished_at, checked,
+                           refreshed, notified, error)
+                          VALUES ($1,$2,$3::timestamptz,$4::timestamptz,$5,$6,$7,$8)""",
+                      row["id"], owner, row["started_at"], row["finished_at"],
+                      checked, refreshed, notified, error)
+        else:
+            await asyncio.to_thread(_sqlite_record_sweep_sync, row)
+        return row["id"]
+    except Exception:
+        return None
+
+
+async def recent_sweeps(limit: int = 5, owner: str | None = None) -> list[dict]:
+    """Recent sweeps, newest first — the evidence that the worker is alive."""
+    owner = owner or DEFAULT_OWNER
+    try:
+        await _ensure_schema()
+        if _pg_url():
+            rows = await _pg(f"""SELECT * FROM {_SWEEPS} WHERE owner_id = $1
+                                 ORDER BY started_at DESC LIMIT $2""",
+                             owner, limit, fetch="all")
+            return [dict(r) for r in rows]
+        return await asyncio.to_thread(_sqlite_recent_sweeps_sync, owner, limit)
+    except Exception:
+        return []
+
+
+def build_run_record(query: str, agent_mode: str, result: dict,
+                     final_report: str, elapsed: float,
+                     signal: dict | None = None) -> dict:
+    """The persisted shape of a finished run (brief or escalation).
+
+    Shared by the API and the refresh worker so a cron-produced run is
+    indistinguishable from one you triggered by hand. `figures` is the
+    structured read of the snapshot table — the object deltas compare (ADR-0012).
+    """
+    from agent.brief_parser import extract_all_periods
+    handoff = result.get("handoff", {}) or {}
+    company = result.get("company_target", "")
+    return {
+        "query": query,
+        "company_target": company,
+        "company_key": company_key_for(company or query),
+        "figures": extract_all_periods(final_report) if final_report else {},
+        "agent_mode": agent_mode,
+        "termination_reason": result.get("termination_reason"),
+        "final_report": final_report,
+        "escalation": handoff.get("escalation"),
+        "compliance_verdict": handoff.get("compliance_verdict"),
+        "risk_assessment": handoff.get("risk_assessment"),
+        "forecast": result.get("forecast"),
+        "tools_called": result.get("tools_called", []),
+        "iteration_count": result.get("iteration_count", 0),
+        "elapsed_seconds": elapsed,
+        "model": os.getenv("CLAUDE_MODEL", "claude-opus-4-8"),
+        "signal": signal,
+    }
