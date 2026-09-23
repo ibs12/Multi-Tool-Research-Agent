@@ -249,3 +249,26 @@ def test_dry_run_spends_nothing(monkeypatch):
 
     summary = asyncio.run(watch_worker.sweep(dry_run=True))
     assert summary["refreshed"] == 0 and summary["dry_run"] is True
+
+
+def test_a_sweep_is_recorded_on_postgres_too(monkeypatch):
+    """asyncpg binds timestamptz only from datetime objects. An ISO string
+    raised DataError, record_sweep swallowed it, and production /sweeps stayed
+    empty — the dead-cron ambiguity the sweep log exists to remove."""
+    from datetime import datetime
+
+    monkeypatch.setattr(run_store, "_pg_url", lambda: "postgresql://stub")
+    monkeypatch.setattr(run_store, "_schema_ready", True)
+    bound = []
+
+    async def _fake_pg(query, *args, fetch="none"):
+        if "INSERT INTO" in query and run_store._SWEEPS in query:
+            for a in args[2:4]:                     # started_at, finished_at
+                if not isinstance(a, datetime):
+                    raise ValueError(f"expected a datetime, got {type(a).__name__}")
+            bound.append(args)
+    monkeypatch.setattr(run_store, "_pg", _fake_pg)
+
+    sweep_id = asyncio.run(run_store.record_sweep(
+        3, 1, 0, started_at="2026-09-23T18:00:00+00:00"))
+    assert sweep_id is not None and len(bound) == 1
