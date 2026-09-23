@@ -89,7 +89,12 @@ async def sweep(dry_run: bool = False, only: str | None = None) -> dict:
         # Record the newest accession AFTER deciding, and regardless of whether
         # we refresh — it is the baseline the next sweep compares against, and
         # letting it drift would make a Signal fire forever.
-        if company.get("cik"):
+        #
+        # Never in a dry run. Recording a filing as "seen" is what consumes its
+        # Signal, so a dry run that wrote here would report "WOULD refresh" and
+        # in the same breath guarantee the real sweep says "no signal" — the
+        # change would be silently swallowed by the act of checking for it.
+        if company.get("cik") and not dry_run:
             newest = newest_accession(company["cik"])
             if newest and newest != company.get("last_seen_accession"):
                 await set_last_seen(key, newest)
@@ -120,8 +125,10 @@ async def sweep(dry_run: bool = False, only: str | None = None) -> dict:
         else:
             print("    (no material change — not notifying)", flush=True)
 
-    sweep_id = await record_sweep(checked, refreshed, notified,
-                                  started_at=started_at, error=error)
+    # A dry run is not a sweep: recording it would make a manual check from a
+    # laptop look like a cron heartbeat and mask a dead worker (ADR-0011).
+    sweep_id = None if dry_run else await record_sweep(
+        checked, refreshed, notified, started_at=started_at, error=error)
     summary = {"sweep_id": sweep_id, "checked": checked, "refreshed": refreshed,
                "notified": notified, "dry_run": dry_run, "error": error}
     print(f"sweep: checked={checked} refreshed={refreshed} notified={notified}"

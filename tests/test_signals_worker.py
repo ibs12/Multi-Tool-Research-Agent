@@ -211,6 +211,31 @@ def test_a_signal_refreshes_once_and_notifies_on_material_change(monkeypatch):
     assert "eps" in sent[0] and "NVIDIA" in sent[0]
 
 
+def test_dry_run_does_not_consume_the_signal(monkeypatch):
+    """A dry run that recorded the new filing as seen would make the real sweep
+    say "no signal" — the change swallowed by the act of checking for it."""
+    _watch(monkeypatch, [{"company_key": "cik:1", "name": "NVIDIA Corp", "cik": 1,
+                          "ticker": None, "last_seen_accession": "acc-1"}])
+    monkeypatch.setattr(watch_worker, "detect", lambda c: {"kind": "filing", "detail": "x"})
+    monkeypatch.setattr(watch_worker, "newest_accession", lambda cik: "acc-2")
+
+    async def _history(*a, **k):
+        return [{"id": "r1", "figures": {}}]
+    monkeypatch.setattr(watch_worker, "runs_for_company", _history)
+    _never_refresh(monkeypatch)
+
+    writes = []
+
+    async def _spy_set_last_seen(*a, **k):
+        writes.append(a)
+    monkeypatch.setattr(watch_worker, "set_last_seen", _spy_set_last_seen)
+
+    asyncio.run(watch_worker.sweep(dry_run=True))
+    assert writes == [], "a dry run must not mark the pending filing as seen"
+    assert asyncio.run(run_store.recent_sweeps()) == [], \
+        "a dry run must not look like a cron heartbeat"
+
+
 def test_dry_run_spends_nothing(monkeypatch):
     _watch(monkeypatch, [{"company_key": "cik:1", "name": "NVIDIA Corp", "cik": 1,
                           "ticker": None, "last_seen_accession": "acc-1"}])
