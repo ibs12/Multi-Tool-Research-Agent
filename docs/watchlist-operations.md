@@ -27,6 +27,9 @@ renames and ticker changes, and it is what the filing Signal polls. A company
 added with a name only still works, but it can only be refreshed manually or on
 a price move.
 
+A price Signal means the price moved more than 7% *since the last Refresh*, so
+a move the agent has already researched never fires twice.
+
 ## Sweep
 
 ```bash

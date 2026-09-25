@@ -84,7 +84,7 @@ async def sweep(dry_run: bool = False, only: str | None = None) -> dict:
         # A company with no Run yet has nothing to compare against: its first
         # Refresh is a baseline, not news.
         signal = ({"kind": "baseline", "detail": "first run for this company"}
-                  if not history else detect(company))
+                  if not history else detect(company, history[0].get("created_at")))
 
         # Record the newest accession AFTER deciding, and regardless of whether
         # we refresh — it is the baseline the next sweep compares against, and
