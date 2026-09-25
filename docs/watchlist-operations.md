@@ -52,11 +52,26 @@ The worker deliberately does **not** live in the web service — a deploy or
 restart would kill a Refresh mid-flight, and a 5–7 minute LLM job has no
 business competing with the request path.
 
-1. In the Railway project, **New → Empty Service** from the same repo.
-2. **Settings → Deploy → Custom Start Command:** `python watch_worker.py`
-3. **Settings → Cron Schedule:** e.g. `0 13 * * 1-5` (weekdays, after US filings land).
-4. **Variables:** it inherits the project's; add `WATCH_WEBHOOK_URL` and
-   `PUBLIC_BASE_URL`.
+As deployed (service `watch-worker`, production):
+
+| Setting | Value | Why |
+|---|---|---|
+| Source | `railway up --service watch-worker` from the repo | same Dockerfile as the web service |
+| Start command | `python watch_worker.py` | overrides the Dockerfile's `server.py` |
+| Cron schedule | `30 22 * * 1-5` (UTC) | weekdays 6:30pm ET: after the close, so the day's close is in, and after most after-hours earnings 8-Ks |
+| Restart policy | `NEVER` | a crash must not loop into repeated paid sweeps; the missing `/sweeps` row is the alarm |
+| Variables | references to `financial-research-agent`: `ANTHROPIC_API_KEY`, `TAVILY_API_KEY`, `CLAUDE_MODEL`, `PGVECTOR_URL`, `PGVECTOR_COLLECTION`; plus `PUBLIC_BASE_URL` | Railway variables are per-service; references mean no secret is copied and a rotated key reaches the worker too |
+
+Add `WATCH_WEBHOOK_URL` to the worker when you have a webhook; until then it
+sweeps and records, but notifies nobody.
+
+**Deploying code changes:** the worker is not redeployed with the web service.
+After changing anything the worker imports, run
+`railway up --service watch-worker --detach` as well.
+
+**Create the service before giving it source.** An empty service cannot run, so
+set the start command, schedule and restart policy first, then deploy — never
+the other way round, or an unscheduled service boots and sweeps immediately.
 
 A cron service runs on schedule and exits, so you pay execution time rather
 than an always-on second service.
