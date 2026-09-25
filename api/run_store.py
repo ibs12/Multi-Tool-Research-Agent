@@ -446,11 +446,15 @@ async def record_sweep(checked: int, refreshed: int, notified: int,
     try:
         await _ensure_schema()
         if _pg_url():
+            # asyncpg binds timestamptz only from datetime objects — an ISO
+            # string raises DataError, which the except below would swallow,
+            # leaving /sweeps empty forever on the one backend that matters.
             await _pg(f"""INSERT INTO {_SWEEPS}
                           (id, owner_id, started_at, finished_at, checked,
                            refreshed, notified, error)
-                          VALUES ($1,$2,$3::timestamptz,$4::timestamptz,$5,$6,$7,$8)""",
-                      row["id"], owner, row["started_at"], row["finished_at"],
+                          VALUES ($1,$2,$3,$4,$5,$6,$7,$8)""",
+                      row["id"], owner, datetime.fromisoformat(row["started_at"]),
+                      datetime.fromisoformat(row["finished_at"]),
                       checked, refreshed, notified, error)
         else:
             await asyncio.to_thread(_sqlite_record_sweep_sync, row)

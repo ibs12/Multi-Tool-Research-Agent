@@ -211,6 +211,31 @@ def test_a_signal_refreshes_once_and_notifies_on_material_change(monkeypatch):
     assert "eps" in sent[0] and "NVIDIA" in sent[0]
 
 
+def test_dry_run_does_not_consume_the_signal(monkeypatch):
+    """A dry run that recorded the new filing as seen would make the real sweep
+    say "no signal" — the change swallowed by the act of checking for it."""
+    _watch(monkeypatch, [{"company_key": "cik:1", "name": "NVIDIA Corp", "cik": 1,
+                          "ticker": None, "last_seen_accession": "acc-1"}])
+    monkeypatch.setattr(watch_worker, "detect", lambda c: {"kind": "filing", "detail": "x"})
+    monkeypatch.setattr(watch_worker, "newest_accession", lambda cik: "acc-2")
+
+    async def _history(*a, **k):
+        return [{"id": "r1", "figures": {}}]
+    monkeypatch.setattr(watch_worker, "runs_for_company", _history)
+    _never_refresh(monkeypatch)
+
+    writes = []
+
+    async def _spy_set_last_seen(*a, **k):
+        writes.append(a)
+    monkeypatch.setattr(watch_worker, "set_last_seen", _spy_set_last_seen)
+
+    asyncio.run(watch_worker.sweep(dry_run=True))
+    assert writes == [], "a dry run must not mark the pending filing as seen"
+    assert asyncio.run(run_store.recent_sweeps()) == [], \
+        "a dry run must not look like a cron heartbeat"
+
+
 def test_dry_run_spends_nothing(monkeypatch):
     _watch(monkeypatch, [{"company_key": "cik:1", "name": "NVIDIA Corp", "cik": 1,
                           "ticker": None, "last_seen_accession": "acc-1"}])
@@ -224,3 +249,26 @@ def test_dry_run_spends_nothing(monkeypatch):
 
     summary = asyncio.run(watch_worker.sweep(dry_run=True))
     assert summary["refreshed"] == 0 and summary["dry_run"] is True
+
+
+def test_a_sweep_is_recorded_on_postgres_too(monkeypatch):
+    """asyncpg binds timestamptz only from datetime objects. An ISO string
+    raised DataError, record_sweep swallowed it, and production /sweeps stayed
+    empty — the dead-cron ambiguity the sweep log exists to remove."""
+    from datetime import datetime
+
+    monkeypatch.setattr(run_store, "_pg_url", lambda: "postgresql://stub")
+    monkeypatch.setattr(run_store, "_schema_ready", True)
+    bound = []
+
+    async def _fake_pg(query, *args, fetch="none"):
+        if "INSERT INTO" in query and run_store._SWEEPS in query:
+            for a in args[2:4]:                     # started_at, finished_at
+                if not isinstance(a, datetime):
+                    raise ValueError(f"expected a datetime, got {type(a).__name__}")
+            bound.append(args)
+    monkeypatch.setattr(run_store, "_pg", _fake_pg)
+
+    sweep_id = asyncio.run(run_store.record_sweep(
+        3, 1, 0, started_at="2026-09-23T18:00:00+00:00"))
+    assert sweep_id is not None and len(bound) == 1
