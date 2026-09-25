@@ -13,7 +13,7 @@ The agent becomes a watchlist tool: companies tracked over time rather than one-
 A **Signal** is cheap, deterministic and LLM-free (see `CONTEXT.md`):
 
 - a new 10-K / 10-Q / 8-K for a tracked company's CIK — detectable through the SEC XBRL/EDGAR client already written for the eval (`eval/frames_client.py`), no model call;
-- a material price move, via the free yfinance path the consensus tool already uses.
+- a material price move **since the company's last Refresh**, via the free yfinance path the consensus tool already uses. Measured from the last close that Refresh could have seen, not over a trailing window: a window re-reports a move the agent has already researched, buying the same Refresh on every sweep until the move scrolls out.
 
 Signals are polled because polling is free. A Refresh is fired only when one trips. The expensive tier stays rare by construction rather than by discipline.
 

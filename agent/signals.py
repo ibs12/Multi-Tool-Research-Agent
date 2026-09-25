@@ -17,7 +17,10 @@ Two signals:
     accession number, not a date: dates make "is this new?" ambiguous for
     same-day filings, and a date comparison that says "yes" forever would
     refresh on every sweep.
-  - **price** — a move beyond a threshold over a short window.
+  - **price** — a move beyond a threshold *since the last Refresh*. Not over a
+    trailing window: a window keeps re-reporting a move the agent has already
+    researched, so one +10% day would buy a fresh Refresh on every sweep until
+    it scrolled out of the window.
 
 Neither raises: a signal source that is down must degrade to "no signal", never
 break the sweep.
@@ -25,11 +28,16 @@ break the sweep.
 
 from __future__ import annotations
 
+from datetime import datetime, time, timedelta
+from zoneinfo import ZoneInfo
+
 from agent.sec_client import recent_filings
 
 MATERIAL_FORMS = ("10-K", "10-Q", "8-K")
 DEFAULT_PRICE_THRESHOLD_PCT = 7.0
-DEFAULT_PRICE_WINDOW_DAYS = 5
+
+_MARKET_TZ = ZoneInfo("America/New_York")
+_MARKET_CLOSE = time(16, 0)
 
 
 def filing_signal(cik: int | str, last_seen_accession: str | None,
@@ -71,33 +79,55 @@ def newest_accession(cik: int | str,
     return filings[0]["accession"] if filings else None
 
 
-def price_signal(ticker: str,
-                 threshold_pct: float = DEFAULT_PRICE_THRESHOLD_PCT,
-                 window_days: int = DEFAULT_PRICE_WINDOW_DAYS) -> dict | None:
-    """A price move beyond `threshold_pct` over the window, or None."""
-    if not ticker:
+def _daily_closes(ticker: str, start: str) -> list[tuple[datetime, float]]:
+    """(market-close time, close) per trading day from `start`, oldest first."""
+    import yfinance
+    hist = yfinance.Ticker(ticker).history(start=start, interval="1d")
+    out = []
+    for day, close in zip(hist.index, hist["Close"].tolist()):
+        if close != close:                                   # drop NaN
+            continue
+        out.append((datetime.combine(day.date(), _MARKET_CLOSE, _MARKET_TZ), float(close)))
+    return out
+
+
+def price_signal(ticker: str, since: str | None,
+                 threshold_pct: float = DEFAULT_PRICE_THRESHOLD_PCT) -> dict | None:
+    """A move beyond `threshold_pct` since the last Refresh at `since`, or None.
+
+    The reference is the last close the previous Refresh could have seen — a
+    run at 11:00 ET saw yesterday's close, not today's. With no previous
+    Refresh there is nothing to compare against, same as a filing baseline.
+    """
+    if not ticker or not since:
         return None
     try:
-        import yfinance
-        hist = yfinance.Ticker(ticker).history(period=f"{max(window_days, 2)}d")
-        closes = [float(c) for c in hist["Close"].tolist() if c == c]  # drop NaN
+        ran_at = datetime.fromisoformat(since)
+        # a week of slack so the reference exists across weekends and holidays
+        start = (ran_at.astimezone(_MARKET_TZ).date() - timedelta(days=7)).isoformat()
+        bars = _daily_closes(ticker, start)
     except Exception:
         return None
-    if len(closes) < 2 or closes[0] == 0:
-        return None
-    move = (closes[-1] - closes[0]) / abs(closes[0]) * 100
+    seen = [c for closed_at, c in bars if closed_at <= ran_at]
+    if not seen or seen[-1] == 0 or bars[-1][0] <= ran_at:
+        return None                  # no reference, or no close since the Refresh
+    reference, latest = seen[-1], bars[-1][1]
+    move = (latest - reference) / abs(reference) * 100
     if abs(move) < threshold_pct:
         return None
     return {
         "kind": "price",
         "move_pct": round(move, 1),
-        "window_days": window_days,
-        "detail": f"price {move:+.1f}% over {window_days}d",
+        "reference_close": round(reference, 2),
+        "detail": f"price {move:+.1f}% since last refresh",
     }
 
 
-def detect(company: dict) -> dict | None:
+def detect(company: dict, last_refresh_at: str | None = None) -> dict | None:
     """The first signal that fires for a watchlist row, or None.
+
+    `last_refresh_at` is the `created_at` of the company's latest Run — the
+    point the price move is measured from.
 
     Filing first: a filing is hard evidence that the numbers changed, whereas a
     price move only says the market reacted to something — possibly to news the
@@ -107,5 +137,5 @@ def detect(company: dict) -> dict | None:
     if company.get("cik"):
         signal = filing_signal(company["cik"], company.get("last_seen_accession"))
     if not signal and company.get("ticker"):
-        signal = price_signal(company["ticker"])
+        signal = price_signal(company["ticker"], last_refresh_at)
     return signal

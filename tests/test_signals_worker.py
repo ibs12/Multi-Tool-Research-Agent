@@ -15,7 +15,6 @@ test are the ones that make the design honest (ADR-0011):
 from __future__ import annotations
 
 import asyncio
-import sys
 
 import pytest
 
@@ -68,44 +67,101 @@ def test_a_dead_signal_source_is_not_an_exception(monkeypatch):
 
 # ── price signal ──────────────────────────────────────────────────────────────
 
-class _FakeYF:
-    def __init__(self, closes):
-        self._closes = closes
+from datetime import datetime
 
-    def Ticker(self, _t):
-        closes = self._closes
-
-        class _T:
-            def history(self, period=None):
-                return {"Close": _Series(closes)}
-        return _T()
+_NY = signals._MARKET_TZ
 
 
-class _Series(list):
-    def tolist(self):
-        return list(self)
+def _bars(*days_and_closes):
+    """[(\"2026-09-21\", 100.0), ...] → what _daily_closes returns."""
+    return [(datetime.combine(datetime.fromisoformat(d).date(), signals._MARKET_CLOSE, _NY), c)
+            for d, c in days_and_closes]
 
 
-def _patch_yf(monkeypatch, closes):
-    monkeypatch.setitem(sys.modules, "yfinance", _FakeYF(closes))
+def _patch_closes(monkeypatch, *days_and_closes):
+    monkeypatch.setattr(signals, "_daily_closes", lambda *a, **k: _bars(*days_and_closes))
 
 
-def test_a_small_move_is_not_a_signal(monkeypatch):
-    _patch_yf(monkeypatch, [100.0, 101.0, 102.0])       # +2%
-    assert signals.price_signal("AAPL", threshold_pct=7.0) is None
+# Last Refresh ran Tue 2026-09-22 at 18:30 ET — after that day's close.
+_RAN_AT = datetime(2026, 9, 22, 18, 30, tzinfo=_NY).isoformat()
 
 
-def test_a_large_move_is_a_signal(monkeypatch):
-    _patch_yf(monkeypatch, [100.0, 95.0, 88.0])         # -12%
-    sig = signals.price_signal("AAPL", threshold_pct=7.0)
+def test_a_small_move_since_the_refresh_is_not_a_signal(monkeypatch):
+    _patch_closes(monkeypatch, ("2026-09-22", 100.0), ("2026-09-23", 102.0))
+    assert signals.price_signal("AAPL", _RAN_AT) is None
+
+
+def test_a_large_move_since_the_refresh_is_a_signal(monkeypatch):
+    _patch_closes(monkeypatch, ("2026-09-22", 100.0), ("2026-09-23", 88.0))
+    sig = signals.price_signal("AAPL", _RAN_AT)
     assert sig["kind"] == "price" and sig["move_pct"] == pytest.approx(-12.0, abs=0.1)
+    assert sig["reference_close"] == 100.0
+
+
+def test_a_move_already_researched_does_not_fire_again(monkeypatch):
+    """The bug this replaced: a +12.8% run-up BEFORE the Refresh fired on every
+    sweep for five days, buying the same research again each time."""
+    _patch_closes(monkeypatch, ("2026-09-16", 80.0), ("2026-09-18", 88.0),
+                  ("2026-09-22", 90.2), ("2026-09-23", 90.5))
+    assert signals.price_signal("AMD", _RAN_AT) is None
+
+
+def test_the_reference_is_the_close_the_refresh_could_see(monkeypatch):
+    # A Refresh at 11:00 ET saw the PREVIOUS day's close, so a same-day slide
+    # after it is a move since the refresh, not part of the baseline.
+    ran_midday = datetime(2026, 9, 22, 11, 0, tzinfo=_NY).isoformat()
+    _patch_closes(monkeypatch, ("2026-09-21", 100.0), ("2026-09-22", 91.0))
+    sig = signals.price_signal("AAPL", ran_midday)
+    assert sig and sig["reference_close"] == 100.0
+
+
+def test_no_close_since_the_refresh_is_not_a_signal(monkeypatch):
+    _patch_closes(monkeypatch, ("2026-09-21", 50.0), ("2026-09-22", 100.0))
+    assert signals.price_signal("AAPL", _RAN_AT) is None
+
+
+def test_without_a_previous_refresh_price_has_no_baseline(monkeypatch):
+    _patch_closes(monkeypatch, ("2026-09-22", 100.0), ("2026-09-23", 50.0))
+    assert signals.price_signal("AAPL", None) is None
+
+
+def test_a_dead_price_source_is_not_an_exception(monkeypatch):
+    def boom(*a, **k):
+        raise RuntimeError("yfinance down")
+    monkeypatch.setattr(signals, "_daily_closes", boom)
+    assert signals.price_signal("AAPL", _RAN_AT) is None
 
 
 def test_filing_wins_over_price(monkeypatch):
     monkeypatch.setattr(signals, "recent_filings", lambda *a, **k: _filings("acc-2"))
-    _patch_yf(monkeypatch, [100.0, 80.0])
-    sig = signals.detect({"cik": 320193, "ticker": "AAPL", "last_seen_accession": "acc-1"})
+    _patch_closes(monkeypatch, ("2026-09-22", 100.0), ("2026-09-23", 80.0))
+    sig = signals.detect({"cik": 320193, "ticker": "AAPL", "last_seen_accession": "acc-1"},
+                         _RAN_AT)
     assert sig["kind"] == "filing"
+
+
+def test_detect_measures_price_from_the_last_refresh(monkeypatch):
+    monkeypatch.setattr(signals, "recent_filings", lambda *a, **k: _filings("acc-1"))
+    _patch_closes(monkeypatch, ("2026-09-22", 100.0), ("2026-09-23", 110.0))
+    sig = signals.detect({"cik": 320193, "ticker": "AAPL", "last_seen_accession": "acc-1"},
+                         _RAN_AT)
+    assert sig["kind"] == "price" and sig["move_pct"] == pytest.approx(10.0)
+
+
+def test_the_worker_hands_detect_the_last_refresh_time(monkeypatch):
+    _watch(monkeypatch, [{"company_key": "cik:1", "name": "AMD", "cik": 1,
+                          "ticker": "AMD", "last_seen_accession": "acc-1"}])
+    monkeypatch.setattr(watch_worker, "newest_accession", lambda cik: "acc-1")
+
+    async def _history(*a, **k):
+        return [{"id": "r1", "figures": {}, "created_at": _RAN_AT}]
+    monkeypatch.setattr(watch_worker, "runs_for_company", _history)
+    seen = []
+    monkeypatch.setattr(watch_worker, "detect", lambda c, since: seen.append(since))
+    _never_refresh(monkeypatch)
+
+    asyncio.run(watch_worker.sweep(dry_run=True))
+    assert seen == [_RAN_AT]
 
 
 # ── notifier ──────────────────────────────────────────────────────────────────
@@ -140,7 +196,7 @@ def _never_refresh(monkeypatch):
 def test_quiet_company_costs_nothing_but_the_sweep_is_still_recorded(monkeypatch):
     _watch(monkeypatch, [{"company_key": "cik:320193", "name": "Apple Inc.",
                           "cik": 320193, "ticker": None, "last_seen_accession": "acc-1"}])
-    monkeypatch.setattr(watch_worker, "detect", lambda c: None)
+    monkeypatch.setattr(watch_worker, "detect", lambda c, *_: None)
     monkeypatch.setattr(watch_worker, "newest_accession", lambda cik: "acc-1")
 
     async def _history(*a, **k):
@@ -162,7 +218,7 @@ def test_a_company_with_no_runs_gets_a_baseline_refresh(monkeypatch):
                           "ticker": None, "last_seen_accession": None}])
     monkeypatch.setattr(watch_worker, "newest_accession", lambda cik: "acc-1")
     monkeypatch.setattr(watch_worker, "detect",
-                        lambda c: pytest.fail("detect should not gate a baseline"))
+                        lambda c, *_: pytest.fail("detect should not gate a baseline"))
 
     async def _history(*a, **k):
         return []
@@ -184,7 +240,7 @@ def test_a_signal_refreshes_once_and_notifies_on_material_change(monkeypatch):
     _watch(monkeypatch, [{"company_key": "cik:1", "name": "NVIDIA Corp", "cik": 1,
                           "ticker": "NVDA", "last_seen_accession": "acc-1"}])
     monkeypatch.setattr(watch_worker, "detect",
-                        lambda c: {"kind": "filing", "detail": "10-Q filed 2026-07-31"})
+                        lambda c, *_: {"kind": "filing", "detail": "10-Q filed 2026-07-31"})
     monkeypatch.setattr(watch_worker, "newest_accession", lambda cik: "acc-2")
 
     async def _history(*a, **k):
@@ -216,7 +272,7 @@ def test_dry_run_does_not_consume_the_signal(monkeypatch):
     say "no signal" — the change swallowed by the act of checking for it."""
     _watch(monkeypatch, [{"company_key": "cik:1", "name": "NVIDIA Corp", "cik": 1,
                           "ticker": None, "last_seen_accession": "acc-1"}])
-    monkeypatch.setattr(watch_worker, "detect", lambda c: {"kind": "filing", "detail": "x"})
+    monkeypatch.setattr(watch_worker, "detect", lambda c, *_: {"kind": "filing", "detail": "x"})
     monkeypatch.setattr(watch_worker, "newest_accession", lambda cik: "acc-2")
 
     async def _history(*a, **k):
@@ -239,7 +295,7 @@ def test_dry_run_does_not_consume_the_signal(monkeypatch):
 def test_dry_run_spends_nothing(monkeypatch):
     _watch(monkeypatch, [{"company_key": "cik:1", "name": "NVIDIA Corp", "cik": 1,
                           "ticker": None, "last_seen_accession": "acc-1"}])
-    monkeypatch.setattr(watch_worker, "detect", lambda c: {"kind": "filing", "detail": "x"})
+    monkeypatch.setattr(watch_worker, "detect", lambda c, *_: {"kind": "filing", "detail": "x"})
     monkeypatch.setattr(watch_worker, "newest_accession", lambda cik: "acc-2")
 
     async def _history(*a, **k):
