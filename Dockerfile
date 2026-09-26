@@ -1,4 +1,16 @@
-# ── Build stage ───────────────────────────────────────────────────────────────
+# ── Frontend stage ────────────────────────────────────────────────────────────
+# The SPA is built here and only its static output reaches the runtime image
+# (ADR-0013). Tests run as part of the build, so a failing check — including the
+# "hostile report renders inert" test — stops the deploy.
+FROM node:22-slim AS frontend
+
+WORKDIR /frontend
+COPY frontend/package.json frontend/package-lock.json ./
+RUN npm ci --no-audit --no-fund
+COPY frontend/ ./
+RUN npm test && npm run build
+
+# ── Python build stage ────────────────────────────────────────────────────────
 FROM python:3.12-slim AS builder
 
 WORKDIR /app
@@ -27,8 +39,9 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 COPY --from=builder /root/.local /root/.local
 ENV PATH=/root/.local/bin:$PATH
 
-# Copy application code
+# Copy application code, then the built SPA over the frontend source
 COPY . .
+COPY --from=frontend /frontend/dist /app/frontend/dist
 
 # Expose API port
 EXPOSE 8000

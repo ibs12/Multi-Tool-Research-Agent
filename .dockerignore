@@ -1,0 +1,13 @@
+# Never ship secrets or local state into the image
+.env
+.env.*
+myenv/
+**/__pycache__/
+.pytest_cache/
+.agent_cache/
+.agent_runs/
+.chroma_db/
+.git/
+# Built inside the image by the frontend stage
+frontend/node_modules/
+frontend/dist/

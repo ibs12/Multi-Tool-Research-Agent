@@ -189,11 +189,14 @@ python server.py
 │   └── sec_fetcher.py      # Fetch SEC HTML, strip tags, chunk on section headers
 ├── api/
 │   └── main.py             # FastAPI — batch endpoint + SSE streaming endpoint
-├── frontend/
-│   └── index.html          # Bloomberg Terminal-style UI — live SSE streaming
+├── frontend/               # React + Vite + TypeScript SPA, built into the image (ADR-0013)
+│   ├── src/api/            # Typed API contract + SSE client (exhaustive event union)
+│   ├── src/run/            # One reducer for live runs and replayed saved runs
+│   ├── src/report/         # Sanitised brief rendering + the ported chart module
+│   └── src/views/          # Watchlist home, company timeline, run panel, add company
 ├── tests/
 │   └── test_api.py         # Smoke tests for both API endpoints
-├── Dockerfile              # Multi-stage Python 3.12 build
+├── Dockerfile              # Multi-stage: Node builds + tests the SPA, Python serves it
 ├── docker-compose.yml      # Full stack: pgvector + agent API
 ├── run.py                  # CLI entrypoint with Rich output + --stream flag
 └── server.py               # Uvicorn server entrypoint
