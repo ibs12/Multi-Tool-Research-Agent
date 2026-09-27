@@ -27,22 +27,43 @@ _ROW_TO_FIELD = {
     "revenue": "revenue", "net income": "net_income",
     "eps": "eps", "gross margin": "gross_margin",
 }
-_NUM = re.compile(r"\$?\s*(-?[\d,]+(?:\.\d+)?)\s*(billion|million|b|m|%)?", re.I)
+# A cell's first number, sign included. Briefs write losses every way a finance
+# writer would: -$2.22B, –$2.22B (en dash), −$2.2B (minus sign), ($2.22B) and
+# $(2.22)B (accounting parentheses). Dropping the sign turns a loss into a
+# profit, so a swing from −$5B to +$5B would read as no change at all.
+_NUM = re.compile(r"""
+    (?P<lp>\()?\s*                 # accounting-style open paren: ($2.22B)
+    (?P<sign>[-–−])?\s*  # hyphen, en dash, minus sign
+    \$?\s*
+    (?P<lp2>\()?\s*                # or inside the dollar sign: $(2.22)B
+    (?P<sign2>[-–−])?\s*
+    (?<![A-Za-z\d.])               # not the 1 of "H1:" or "Q3" — a label, not a figure
+    (?P<num>\d[\d,]*(?:\.\d+)?)
+    \s*(?P<rp>\))?\s*
+    (?P<unit>trillion|billion|million|bn|tn|t|b|m|%)?
+    \s*(?P<rp2>\))?
+""", re.I | re.X)
 _EMPTY_CELL = {"", "—", "-", "–", "n/a", "N/A"}
 _YEARISH = re.compile(r"(FY)?\s*20\d{2}", re.I)
 
 
 def _to_number(text: str, field: str = ""):
-    """First number in a cell, normalised to absolute units ($391.0B → 3.91e11)."""
+    """First number in a cell, normalised to absolute units ($391.0B → 3.91e11),
+    negative when the cell writes it as a loss (see `_NUM`)."""
     m = _NUM.search(text)
     if not m:
         return None
-    val = float(m.group(1).replace(",", ""))
-    unit = (m.group(2) or "").lower()
-    if unit in ("billion", "b"):
+    val = float(m.group("num").replace(",", ""))
+    unit = (m.group("unit") or "").lower()
+    if unit in ("trillion", "tn", "t"):
+        val *= 1e12
+    elif unit in ("billion", "bn", "b"):
         val *= 1e9
     elif unit in ("million", "m"):
         val *= 1e6
+    closed = m.group("rp") or m.group("rp2")
+    if m.group("sign") or m.group("sign2") or ((m.group("lp") or m.group("lp2")) and closed):
+        val = -val
     return val
 
 
