@@ -64,6 +64,10 @@ PYTHONPATH=. python eval/generate_dataset.py     # live SEC calls (cached); seed
 All categories come from **detectable structural signals in SEC XBRL**, not
 hand-eyeballing at volume (the TakeMeter antidote):
 
+- **Fiscal-year labels** follow the filer, not the SEC frame: a frame is keyed by
+  *calendar* year, so for a January year-end `CY2024` is the company's FY2025.
+  Cases are labelled by the year the fiscal year ends, taken one week back so
+  52/53-week years closing on 1–3 January stay in the year they cover (#58).
 - **correct_extraction** — frames-canonical annual values (revenue = union of
   revenue concepts, net income, EPS, gross margin = GrossProfit÷Revenue), each
   field pinned to its own source accession.
