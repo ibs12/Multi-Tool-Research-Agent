@@ -1,0 +1,206 @@
+/* Styles for the watchlist views added in the SPA. Built only from the tokens
+   in terminal.css, so the new screens share the terminal identity (ADR-0013). */
+
+:root {
+  --radius: 4px;
+  --page-pad: 32px;
+}
+
+a { color: var(--accent); text-decoration: none; }
+a:hover { text-decoration: underline; }
+:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+
+.muted { color: var(--text-secondary); }
+.small { font-size: 12px; }
+.pos { color: var(--green); }
+.neg { color: var(--red); }
+
+/* ── Top bar navigation ───────────────────────────────────────── */
+.topbar-brand { color: inherit; }
+.topbar-brand:hover { text-decoration: none; }
+.topbar-nav { display: flex; gap: 4px; margin-right: auto; margin-left: 32px; }
+.nav-link {
+  font-family: var(--mono);
+  font-size: 11px;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  color: var(--text-secondary);
+  padding: 6px 12px;
+  border-radius: var(--radius);
+}
+.nav-link:hover { color: var(--text-primary); text-decoration: none; background: var(--bg-card); }
+.nav-link.active { color: var(--accent); background: rgba(245,166,35,0.08); }
+.status-dot.offline { background: var(--red); box-shadow: 0 0 6px var(--red); animation: none; }
+
+/* ── Page scaffold ────────────────────────────────────────────── */
+.page {
+  max-width: 1120px;
+  margin: 0 auto;
+  padding: 28px var(--page-pad) 64px;
+  display: flex;
+  flex-direction: column;
+  gap: 24px;
+}
+/* Flex children default to min-width:auto, so a wide table would stretch the
+   page instead of scrolling inside .table-scroll. */
+.page > * { min-width: 0; }
+.page-head { display: flex; justify-content: space-between; align-items: flex-start; gap: 16px; flex-wrap: wrap; }
+.page-title { font-size: 26px; font-weight: 600; margin: 4px 0 6px; }
+.head-actions { display: flex; gap: 8px; flex-wrap: wrap; }
+.back-link { font-family: var(--mono); font-size: 11px; color: var(--text-secondary); letter-spacing: 0.05em; }
+.section-title {
+  font-family: var(--mono);
+  font-size: 11px;
+  font-weight: 500;
+  letter-spacing: 0.15em;
+  text-transform: uppercase;
+  color: var(--text-secondary);
+  margin: 0 0 12px;
+}
+
+.card {
+  background: var(--bg-panel);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 20px 22px;
+  color: var(--text-primary);
+}
+.card p { line-height: 1.6; }
+.card-row { display: flex; justify-content: space-between; align-items: baseline; gap: 12px; }
+.card-row .section-title { margin-bottom: 8px; }
+.notice { padding: 12px 16px; border: 1px solid currentColor; border-radius: var(--radius); }
+
+.copy-btn { text-decoration: none; white-space: nowrap; }
+.copy-btn:hover { text-decoration: none; }
+.copy-btn.danger:hover { border-color: var(--red); color: var(--red); }
+
+/* ── Sweep liveness line ──────────────────────────────────────── */
+.sweep-status {
+  font-family: var(--mono);
+  font-size: 11px;
+  color: var(--text-secondary);
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+.sweep-dot { width: 6px; height: 6px; border-radius: 50%; background: var(--green); box-shadow: 0 0 6px var(--green); }
+.sweep-status.warn { color: var(--accent); }
+.sweep-status.warn .sweep-dot { background: var(--accent); box-shadow: 0 0 6px var(--accent); }
+
+/* ── Quiet week: an answer, not an empty state ────────────────── */
+.quiet-card { display: flex; gap: 18px; align-items: center; border-color: rgba(0,208,132,0.25); }
+.quiet-card h2 { font-size: 18px; margin: 0 0 4px; }
+.quiet-card p { color: var(--text-secondary); margin: 0; }
+.quiet-mark {
+  flex-shrink: 0;
+  width: 44px; height: 44px;
+  display: grid; place-items: center;
+  border-radius: 50%;
+  font-size: 20px;
+  color: var(--green);
+  background: rgba(0,208,132,0.1);
+  border: 1px solid rgba(0,208,132,0.35);
+}
+.quiet { color: var(--green); }
+.onboarding h2 { font-size: 18px; margin: 0 0 8px; }
+.onboarding p { color: var(--text-secondary); margin: 0 0 16px; max-width: 60ch; }
+
+/* ── Needs attention ──────────────────────────────────────────── */
+.attention-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(300px, 1fr)); gap: 14px; }
+.attention-card { display: flex; flex-direction: column; gap: 6px; border-left: 3px solid var(--accent); transition: border-color 0.15s, background 0.15s; }
+.attention-card:hover { text-decoration: none; background: var(--bg-card); }
+.company-name { font-weight: 600; font-size: 15px; color: var(--text-primary); }
+
+.delta-list { list-style: none; margin: 4px 0 0; padding: 0; display: flex; flex-direction: column; gap: 6px; }
+.delta-item {
+  display: flex; justify-content: space-between; gap: 12px; flex-wrap: wrap;
+  font-family: var(--mono); font-size: 12px; color: var(--text-primary);
+  padding: 6px 0; border-bottom: 1px dashed var(--border);
+}
+.delta-item:last-child { border-bottom: none; }
+.delta-field { color: var(--text-secondary); }
+.delta-verdict { color: var(--accent); }
+.badge-clear { background: rgba(0,208,132,0.12); color: var(--green); }
+
+/* ── Tables ───────────────────────────────────────────────────── */
+.table-scroll { overflow-x: auto; -webkit-overflow-scrolling: touch; }
+.watch-table, .figures-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 13px;
+}
+.watch-table th, .watch-table td, .figures-table th, .figures-table td {
+  text-align: left;
+  padding: 11px 14px;
+  border-bottom: 1px solid var(--border);
+  white-space: nowrap;
+}
+.watch-table thead th, .figures-table thead th {
+  font-family: var(--mono);
+  font-size: 10px;
+  font-weight: 500;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  color: var(--text-secondary);
+  background: var(--bg-panel);
+}
+.watch-table tbody tr:hover { background: var(--bg-panel); }
+.watch-table tbody th { font-weight: 500; }
+.company-link { color: var(--text-primary); }
+.ticker {
+  font-family: var(--mono); font-size: 10px; color: var(--text-secondary);
+  margin-left: 8px; padding: 1px 6px; border: 1px solid var(--border-light); border-radius: 2px;
+}
+.change-flag { color: var(--accent); font-family: var(--mono); font-size: 11px; }
+.figures-table td { font-family: var(--mono); text-align: right; }
+.figures-table thead th:not(:first-child) { text-align: right; }
+.figures-table .is-estimate { color: var(--text-secondary); font-style: italic; }
+.figures-table tbody th { color: var(--text-secondary); font-weight: 400; }
+
+/* ── Run timeline ─────────────────────────────────────────────── */
+.timeline { list-style: none; margin: 0; padding: 0; }
+.timeline-row {
+  display: flex; align-items: center; gap: 14px;
+  padding: 10px 4px; border-bottom: 1px solid var(--border); color: var(--text-primary);
+}
+.timeline-row:hover { background: var(--bg-card); text-decoration: none; }
+.timeline-when { font-family: var(--mono); font-size: 12px; min-width: 140px; }
+
+/* ── Add company ──────────────────────────────────────────────── */
+.add-form { display: flex; flex-direction: column; gap: 12px; }
+.form-grid { display: grid; grid-template-columns: 2fr 1fr 1fr; gap: 12px; }
+.form-grid label { display: flex; flex-direction: column; gap: 6px; }
+.text-input {
+  background: var(--bg-input);
+  border: 1px solid var(--border-light);
+  border-radius: var(--radius);
+  color: var(--text-primary);
+  font-family: var(--mono);
+  font-size: 13px;
+  padding: 9px 11px;
+}
+.text-input:focus { outline: none; border-color: var(--accent); }
+.text-input[aria-invalid="true"] { border-color: var(--red); }
+.add-form .run-btn { align-self: flex-start; }
+
+/* ── Run panel additions ──────────────────────────────────────── */
+h1.report-company { margin: 0; }
+/* The original footer packed three controls into one 340px row and let them
+   shrink; wrap instead, and never let the run button collapse. */
+.query-footer { flex-wrap: wrap; gap: 12px; }
+.mode-btn, .iter-label, .run-btn { white-space: nowrap; }
+.run-btn { flex-shrink: 0; margin-left: auto; }
+.report-actions { display: flex; gap: 12px; align-items: center; flex-wrap: wrap; justify-content: flex-end; }
+
+@media (max-width: 768px) {
+  :root { --page-pad: 16px; }
+  .topbar { padding: 0 16px; }
+  .topbar-nav { margin-left: 12px; }
+  .brand-name, .topbar-time { display: none; }
+  .form-grid { grid-template-columns: 1fr; }
+  .page-title { font-size: 22px; }
+  .report-header { flex-wrap: wrap; gap: 10px; }
+  .col-secondary { display: none; }
+  .quiet-card { align-items: flex-start; }
+}

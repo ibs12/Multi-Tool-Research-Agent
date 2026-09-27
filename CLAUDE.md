@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## What this is
 
-A multi-tool financial research agent: given a query like `"Analyse Apple Inc. investment outlook"`, it runs a supervisor-driven LangGraph loop that calls research tools (web, Wikipedia, SEC EDGAR, RAG over 10-K/10-Q text, arXiv, calculator, analyst consensus), then synthesises a structured analyst brief with per-claim source citations. Ships as a CLI, a FastAPI + SSE server with a single-file frontend, and deploys to Railway.
+A multi-tool financial research agent: given a query like `"Analyse Apple Inc. investment outlook"`, it runs a supervisor-driven LangGraph loop that calls research tools (web, Wikipedia, SEC EDGAR, RAG over 10-K/10-Q text, arXiv, calculator, analyst consensus), then synthesises a structured analyst brief with per-claim source citations. Ships as a CLI, a FastAPI + SSE server that serves a React + Vite + TypeScript SPA, and deploys to Railway.
 
 ## Commands
 
@@ -19,6 +19,12 @@ python run.py --stream "Analyse Apple Inc. investment outlook"
 # API server (Swagger at /docs, frontend at /)
 python server.py                 # 0.0.0.0:8000
 python server.py --reload        # hot-reload for dev
+
+# Frontend (Node 22) — dev server on :5173 proxies API routes to :8000
+cd frontend && npm ci
+npm run dev                      # needs `python server.py` running
+npm test                         # vitest: SSE parsing, run reducer, XSS-inert rendering
+npm run build                    # typecheck + build to frontend/dist (served by FastAPI at /)
 
 # Full stack (pgvector + agent) or DB only
 docker compose up -d
@@ -68,9 +74,11 @@ Requires `ANTHROPIC_API_KEY` and `TAVILY_API_KEY` in `.env`. SEC EDGAR, arXiv, W
 
 **Tool nodes never raise.** Every node catches its own exceptions and returns a `ToolResult` with `success=False`. Success is detected downstream by a **string-prefix convention**: a tool "failed" iff its output starts with `"[<Tool> Error]"` (e.g. `[RAG Error]`, `[Calculator Error]`). Preserve that prefix format in any new tool.
 
-**The `forecast` field bypasses the LLM.** `consensus_estimates_node` attaches a structured `forecast` dict (from `build_quarterly_outlook`) to state. The SSE endpoint emits it as its own `forecast` event *before* synthesis, and `frontend/index.html` charts it directly — the numbers never pass through Claude, so they can't be hallucinated. Synthesis prose and chart data are separate paths.
+**The `forecast` field bypasses the LLM.** `consensus_estimates_node` attaches a structured `forecast` dict (from `build_quarterly_outlook`) to state. The SSE endpoint emits it as its own `forecast` event *before* synthesis, and the frontend's chart module (`frontend/src/report/charts.js`) charts it directly — the numbers never pass through Claude, so they can't be hallucinated. Synthesis prose and chart data are separate paths.
 
 **Synthesis enforces citations and a fixed report structure** (`agent/nodes/synthesis.py`). The system prompt hard-codes the section order and a specific Financial Snapshot table (`FY2022…FY2027E` columns), mandates per-cell source tags (`[SEC Filing]`, `[Analyst Consensus — N analysts]`, etc.), injects today's date to prevent referencing future quarters, and forbids inventing figures. Two entry points share one prompt builder: `synthesis_node` (blocking, for CLI + batch API) and `stream_synthesis` (sync generator yielding tokens, bridged to async SSE via a `queue.Queue` + `asyncio.to_thread`).
+
+**The frontend is a built SPA served by the API** (ADR-0013). `frontend/` is React + Vite + TypeScript; `npm run build` writes `frontend/dist`, which FastAPI serves at `/`, `/research`, `/company/{key}` and `/assets` (explicit routes, not a catch-all, so unknown API paths still 404). `/?run=<id>` is the permanent permalink shape — shared links and worker notifications use it. The Docker image builds the SPA in a Node stage that also runs `npm test`, so a failing check stops the deploy. Three rules: (1) the SSE contract is the closed union `StreamEvent` in `frontend/src/api/types.ts`, switched over exhaustively — **adding a server event means adding it there, or the build fails**, which is the point (the old frontend silently dropped `escalation`); (2) live runs and saved runs go through the *same* reducer (`src/run/runModel.ts`, `recordToEvents`), so they can't render differently; (3) the brief is model output quoting scraped pages and is always passed through DOMPurify (`src/report/markdown.ts`) — never render it any other way. The chart module is ported verbatim from the old single-file UI and does imperative DOM work on the already-sanitised brief.
 
 **SSE streaming details** (`api/main.py`). `/research/stream` uses `graph.astream(stream_mode="values")` and reconstructs which node ran by diffing consecutive full-state snapshots (`_diff_state`: iteration count up → supervisor; `tool_results` grew → dispatcher/tool). A `Semaphore(3)` caps concurrent streams (returns 503 when full) to fit Railway's memory limit. Prefer SSE over WebSockets — traffic is strictly server→client.
 

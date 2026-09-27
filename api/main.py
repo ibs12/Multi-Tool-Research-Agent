@@ -14,6 +14,7 @@ SSE event types:
                     (node ∈ tools, supervisor, dispatcher, risk_analyst,
                      compliance_checker, synthesis)
   forecast        — structured outlook     {"event","data": {...}}
+  meta            — non-"completed" end    {"event","data": {"termination_reason"}}
   escalation      — compliance escalated   {"event","data": {package, verdict}}
                     (terminal — no report follows; ADR-0009)
   report_chunk    — one synthesis token    {"event","data": "<text>"}
@@ -22,6 +23,10 @@ SSE event types:
                     (permalink: GET /runs/{run_id})
   error           — something went wrong   {"event","data": "<message>"}
   done            — stream closed          {"event"}
+
+The client mirrors this list as a closed TypeScript union
+(frontend/src/api/types.ts). Add an event here → add it there, or the frontend
+build fails — deliberately (ADR-0013).
 
 Concurrency model:
   _semaphore(3) caps concurrent streaming requests.
@@ -78,20 +83,44 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-_frontend_dir = _os.path.join(_os.path.dirname(_os.path.dirname(__file__)), "frontend")
-if _os.path.exists(_frontend_dir):
-    app.mount("/app", StaticFiles(directory=_frontend_dir, html=True), name="frontend")
+# The frontend is a built SPA (ADR-0013): `npm run build` in frontend/ writes
+# frontend/dist, and the Docker image builds it in a Node stage. Only the build
+# output is served — never frontend/ itself, which is now source.
+_frontend_dist = _os.path.join(_os.path.dirname(_os.path.dirname(__file__)), "frontend", "dist")
+_spa_index = _os.path.join(_frontend_dist, "index.html")
+if _os.path.isdir(_os.path.join(_frontend_dist, "assets")):
+    # Hashed filenames, so these are safe to cache for as long as a browser likes.
+    app.mount("/assets", StaticFiles(directory=_os.path.join(_frontend_dist, "assets")), name="assets")
 
 # Limit concurrent streaming requests to avoid OOM on Railway's 512 MB plan.
 _semaphore = asyncio.Semaphore(3)
 
 
+def _spa():
+    if _os.path.exists(_spa_index):
+        # index.html names the current hashed bundle, so it must never be cached
+        # past a deploy.
+        return FileResponse(_spa_index, headers={"Cache-Control": "no-cache"})
+    return {"message": "Financial Research Agent API — frontend not built",
+            "docs": "/docs", "build": "cd frontend && npm ci && npm run build"}
+
+
+# The SPA's own paths. Listed explicitly rather than a catch-all, so an unknown
+# API path still 404s instead of answering with HTML. `/?run=<id>` permalinks
+# resolve through "/".
 @app.get("/", include_in_schema=False)
 def root():
-    index = _os.path.join(_frontend_dir, "index.html")
-    if _os.path.exists(index):
-        return FileResponse(index)
-    return {"message": "Financial Research Agent API", "docs": "/docs"}
+    return _spa()
+
+
+@app.get("/research", include_in_schema=False)
+def spa_research():
+    return _spa()
+
+
+@app.get("/company/{company_key:path}", include_in_schema=False)
+def spa_company(company_key: str):
+    return _spa()
 
 
 # ── Models ────────────────────────────────────────────────────────────────────
