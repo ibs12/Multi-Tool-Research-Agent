@@ -296,8 +296,16 @@ def get_historical_financials(ticker: str) -> str:
                     gm  = f"{(gp_v / rev_v) * 100:.1f}%"
                 else:
                     gm  = "Not available"
+                # Reported diluted EPS. Without it synthesis (which must not
+                # invent figures) leaves every historical EPS cell empty, and
+                # watchlist EPS deltas could only ever come from estimates.
+                eps_v   = _df_val(fin, "Diluted EPS", col)
+                if eps_v is None:
+                    eps_v = _df_val(fin, "Basic EPS", col)
+                eps     = _safe_eps(eps_v)
                 lines.append(
-                    f"  {fy}: Revenue {rev} | Net Income {ni} | Gross Margin {gm} {cite}"
+                    f"  {fy}: Revenue {rev} | Net Income {ni} | Gross Margin {gm} "
+                    f"| Diluted EPS {eps} {cite}"
                 )
         else:
             lines.append("  Not available — no annual income statement data returned.")
