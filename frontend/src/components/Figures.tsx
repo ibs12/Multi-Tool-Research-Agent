@@ -1,14 +1,37 @@
 import type { Delta, Figures } from '../api/types';
+import { ScrollRegion } from './a11y';
 import { fieldLabel, fmtFigure, fmtPct, sortPeriods } from '../format';
 
-/** The latest run's structured figures, periods across, fields down. */
+/**
+ * The latest run's structured figures. Periods run across on wide screens and
+ * down on phones (CSS picks one), so a phone never has to scroll an 8-column
+ * grid sideways to read a number.
+ */
 export function FiguresTable({ figures }: { figures: Figures }) {
   const periods = sortPeriods(Object.keys(figures));
   const fields = [...new Set(periods.flatMap(p => Object.keys(figures[p] ?? {})))];
   if (!periods.length) return <p className="muted">No figures could be read from this run's brief.</p>;
   return (
-    <div className="table-scroll">
-      <table className="figures-table">
+    <ScrollRegion label="Latest figures, scrollable">
+      <table className="figures-table figures-tall">
+        <caption className="sr-only">Latest figures by period</caption>
+        <thead>
+          <tr>
+            <th scope="col">Period</th>
+            {fields.map(f => <th scope="col" key={f}>{fieldLabel(f)}</th>)}
+          </tr>
+        </thead>
+        <tbody>
+          {periods.map(p => (
+            <tr key={p} className={p.endsWith('E') ? 'is-estimate' : ''}>
+              <th scope="row">{p}</th>
+              {fields.map(f => <td key={f}>{fmtFigure(f, figures[p]?.[f])}</td>)}
+            </tr>
+          ))}
+        </tbody>
+      </table>
+      <table className="figures-table figures-wide">
+        <caption className="sr-only">Latest figures by metric</caption>
         <thead>
           <tr>
             <th scope="col">Metric</th>
@@ -26,7 +49,7 @@ export function FiguresTable({ figures }: { figures: Figures }) {
           ))}
         </tbody>
       </table>
-    </div>
+    </ScrollRegion>
   );
 }
 

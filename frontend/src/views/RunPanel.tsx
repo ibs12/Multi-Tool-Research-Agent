@@ -4,6 +4,7 @@ import type { AgentMode, RunRecord } from '../api/types';
 import { EscalationCard, escalationAsText } from '../report/EscalationCard';
 import { fmtWhen } from '../format';
 import { href, navigate } from '../router';
+import { Announce, useTitle } from '../components/a11y';
 import { initialRunState, replay, runReducer, type RunState } from '../run/runModel';
 
 /**
@@ -95,6 +96,14 @@ export function RunPanel({ source }: { source: RunSource }) {
   }
 
   const company = view.companyTarget || record?.company_target || query || 'Analyst Brief';
+  useTitle(view.outcome ? `${company} ${view.outcome.kind === 'escalation' ? '— escalated' : 'brief'}`
+    : source.kind === 'saved' ? 'Saved run' : running ? 'Researching…' : 'Research');
+
+  // One polite announcement per outcome; per-token streaming is deliberately silent.
+  const announcement = source.kind !== 'live' ? ''
+    : view.outcome?.kind === 'brief' ? `Brief ready for ${company}.`
+    : view.outcome?.kind === 'escalation' ? 'Escalated to a human. No brief was produced.'
+    : view.phase === 'failed' ? `Run failed. ${view.error ?? ''}` : '';
 
   return (
     <div className="layout">
@@ -152,7 +161,9 @@ export function RunPanel({ source }: { source: RunSource }) {
           <div className="activity-header">
             <span className="panel-label" style={{ margin: 0 }}>Agent Activity</span>
           </div>
-          <div className="activity-log" role="log" aria-live="polite">
+          {/* Not live: the status line below the loading bars carries progress,
+              and a live log would read every tool result aloud. */}
+          <div className="activity-log" role="log" aria-live="off" aria-label="Agent activity" tabIndex={0}>
             {view.log.length === 0 && (
               <div className="log-entry system"><span className="log-icon">◦</span>
                 <span className="log-text">Agent ready. Enter a query to begin.</span></div>
@@ -175,6 +186,7 @@ export function RunPanel({ source }: { source: RunSource }) {
         <div className="report-body">
           <ReportBody view={view} source={source} startedAt={startedAt} mode={mode} loadError={loadError} />
         </div>
+        <Announce message={announcement} />
       </main>
     </div>
   );
@@ -232,7 +244,7 @@ function ReportBody({ view, source, startedAt, mode, loadError }:
       <div className="empty-title">Run unavailable</div><div className="empty-sub">{loadError}</div></div>;
   }
   const o = view.outcome;
-  if (o?.kind === 'escalation') return <EscalationCard pkg={o.package} verdict={o.verdict} />;
+  if (o?.kind === 'escalation') return <EscalationCard pkg={o.package} verdict={o.verdict} live={source.kind === 'live'} />;
   if (o?.kind === 'brief') {
     return (
       <Suspense fallback={<div className="markdown-body muted">Rendering brief…</div>}>

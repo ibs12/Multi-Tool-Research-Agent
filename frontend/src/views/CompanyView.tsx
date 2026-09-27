@@ -4,6 +4,7 @@ import type { CompanyTimeline, WatchlistEntry } from '../api/types';
 import { DeltaList, FiguresTable, OutcomeBadge } from '../components/Figures';
 import { fmtAgo, fmtWhen } from '../format';
 import { href, navigate, onLinkClick } from '../router';
+import { useTitle } from '../components/a11y';
 
 export function CompanyView({ companyKey }: { companyKey: string }) {
   const [entry, setEntry] = useState<WatchlistEntry | null | undefined>(undefined);
@@ -33,6 +34,7 @@ export function CompanyView({ companyKey }: { companyKey: string }) {
   const name = entry?.name ?? timeline?.company_target ?? companyKey;
   const latest = timeline?.runs[0];
   const researchQuery = `Analyse ${name} investment outlook`;
+  useTitle(entry === undefined && timeline === undefined ? null : name);
 
   return (
     <main className="page">
