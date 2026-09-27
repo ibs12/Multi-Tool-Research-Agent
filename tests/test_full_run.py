@@ -69,3 +69,10 @@ def test_resume_refuses_a_checkpoint_from_another_model(tmp_path, monkeypatch):
                                 {"terminal": "brief", "fields": {}, "model": "claude-opus-4-8"})
     with pytest.raises(SystemExit, match="claude-opus-4-8"):
         asyncio.run(run_full.run_arm_resumable(cases, "multi"))
+
+
+def test_since_keeps_only_in_range_fiscal_years():
+    cases = [c for c in run_full.load_live_eval_set()
+             if c["category"] == "correct_extraction" and (run_full._fiscal_year(c) or 0) >= 2022]
+    assert len(cases) == 35
+    assert all(run_full._fiscal_year(c) >= 2022 for c in cases)

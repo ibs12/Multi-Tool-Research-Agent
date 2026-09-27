@@ -24,7 +24,12 @@ Properties for a long job:
 
     # One arm, one slice — e.g. extraction accuracy of the production pipeline,
     # the number ADR-0012's deltas rest on, without paying for both arms:
-    PGVECTOR_URL= python eval/run_full.py --arm multi --category correct_extraction
+    PGVECTOR_URL= python eval/run_full.py --arm multi --category correct_extraction --since 2022
+
+`--since` matters for extraction: the research tools fetch a company's *latest*
+filings and the brief's snapshot covers FY2022 onward, so an FY2019 case finds
+no source data and compliance (correctly) escalates — it measures a scope
+limit, not extraction accuracy.
 """
 
 from __future__ import annotations
@@ -60,6 +65,12 @@ def load_live_eval_set() -> list[dict]:
     return live
 
 
+def _fiscal_year(case: dict) -> int | None:
+    import re
+    m = re.search(r"(\d{4})", str(case.get("period", "")))
+    return int(m.group(1)) if m else None
+
+
 def _model() -> str:
     return os.getenv("CLAUDE_MODEL", "claude-opus-4-8")
 
@@ -88,11 +99,22 @@ async def _run_case(case: dict, arm: str) -> dict:
 
     query = f"Analyse {case['company']} {case['period']} financial results"
     final = await graph.ainvoke(make_initial_state(query, agent_mode=arm))
+    # Why, not just what: an escalation or a bad figure is only interpretable
+    # next to the compliance reason and the tools that failed to deliver.
+    handoff = final.get("handoff") or {}
+    why = {
+        "failed_tools": sorted({r.get("tool_name") for r in final.get("tool_results") or []
+                                if not r.get("success")} - {None}),
+        "compliance": (handoff.get("compliance_verdict") or {}).get("verdict"),
+    }
     if final.get("termination_reason") == "escalated":
-        return {"terminal": "escalated", "fields": {}}
+        pkg = handoff.get("escalation") or {}
+        return {"terminal": "escalated", "fields": {}, **why,
+                "escalation_reason": str(pkg.get("reason") or "")[:600],
+                "gap_type": (handoff.get("compliance_verdict") or {}).get("gap_type")}
     brief = synthesis_node(final).get("final_report", "")
     return {"terminal": "brief" if brief.strip() else "no_decision",
-            "fields": extract_fields(brief, case["period"])}
+            "fields": extract_fields(brief, case["period"]), **why}
 
 
 async def run_arm_resumable(cases: list[dict], arm: str) -> dict:
@@ -214,6 +236,8 @@ def main() -> None:
     ap.add_argument("--limit", type=int, default=0, help="cap cases (smoke)")
     ap.add_argument("--category", action="append", default=[],
                     help="only these case categories (repeatable), e.g. correct_extraction")
+    ap.add_argument("--since", type=int, default=0,
+                    help="only cases whose fiscal year is >= this (e.g. 2022, the brief's range)")
     ap.add_argument("--report-only", action="store_true",
                     help="score+compare from existing checkpoints, run nothing")
     args = ap.parse_args()
@@ -221,6 +245,8 @@ def main() -> None:
     cases = load_live_eval_set()
     if args.category:
         cases = [c for c in cases if c["category"] in set(args.category)]
+    if args.since:
+        cases = [c for c in cases if (_fiscal_year(c) or 0) >= args.since]
     if args.limit:
         cases = cases[:args.limit]
     print(f"live eval set: {len(cases)} cases "
@@ -234,7 +260,7 @@ def main() -> None:
 
     # A slice or a single arm can't be a before/after comparison — score it alone.
     if args.category or args.arm != "both":
-        label = "+".join(sorted(args.category)) or "all"
+        label = ("+".join(sorted(args.category)) or "all") + (f"-fy{args.since}+" if args.since else "")
         for arm in (["single", "multi"] if args.arm == "both" else [args.arm]):
             score_single_arm(cases, arm, label)
         return
