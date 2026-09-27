@@ -26,12 +26,37 @@ export function Brief({ markdown, forecast }: { markdown: string; forecast: Fore
       console.error('chart rendering failed; the brief is still shown', err);
     }
     colourVerdict(el);
+    const unobserve = makeTablesReachable(el);
     return () => {
+      unobserve();
       el.querySelectorAll('canvas').forEach(c => Chart.getChart(c)?.destroy());
     };
   }, [markdown, forecast]);
 
   return <div className="markdown-body" ref={ref} />;
+}
+
+/**
+ * On phones the brief's wide tables scroll sideways (display:block), so each one
+ * that actually overflows becomes a named keyboard stop
+ * (axe: scrollable-region-focusable). Re-checked on resize.
+ */
+function makeTablesReachable(el: HTMLElement): () => void {
+  const tables = Array.from(el.querySelectorAll('table'));
+  const sync = () => tables.forEach((t, i) => {
+    if (t.scrollWidth > t.clientWidth + 1) {
+      const heading = t.closest('div, section')?.querySelector('h2, h3')?.textContent?.trim();
+      t.tabIndex = 0;
+      t.setAttribute('aria-label', heading ? `${heading} table` : `Table ${i + 1}`);
+    } else {
+      t.removeAttribute('tabindex');              // no dead tab stops where nothing scrolls
+      t.removeAttribute('aria-label');
+    }
+  });
+  sync();
+  const ro = typeof ResizeObserver !== 'undefined' ? new ResizeObserver(sync) : null;
+  tables.forEach(t => ro?.observe(t));
+  return () => ro?.disconnect();
 }
 
 function colourVerdict(el: HTMLElement) {

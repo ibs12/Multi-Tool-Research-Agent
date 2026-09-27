@@ -3,6 +3,7 @@ import { api } from '../api/client';
 import type { Sweep, WatchlistEntry } from '../api/types';
 import { DeltaList, OutcomeBadge } from '../components/Figures';
 import { SweepStatus } from '../components/SweepStatus';
+import { ScrollRegion, useTitle } from '../components/a11y';
 import { fmtAgo, fmtFigure, fmtWhen, sortPeriods } from '../format';
 import { href, onLinkClick } from '../router';
 import { AddCompany } from './AddCompany';
@@ -43,6 +44,7 @@ export function WatchlistHome() {
   const [error, setError] = useState<string | null>(null);
   const [adding, setAdding] = useState(false);
   const lastLooked = useLastLooked();
+  useTitle('Watchlist');
 
   const load = () => {
     api.watchlist().then(setEntries, e => setError(String(e.message ?? e)));
@@ -123,8 +125,9 @@ export function WatchlistHome() {
       {entries.length > 0 && (
         <section aria-labelledby="all">
           <h2 id="all" className="section-title">All companies · {entries.length}</h2>
-          <div className="table-scroll">
+          <ScrollRegion label="All companies, scrollable">
             <table className="watch-table">
+              <caption className="sr-only">Tracked companies, their last refresh and whether anything material changed</caption>
               <thead>
                 <tr>
                   <th scope="col">Company</th>
@@ -143,7 +146,7 @@ export function WatchlistHome() {
                       {e.ticker && <span className="ticker">{e.ticker}</span>}
                     </th>
                     <td className="muted col-secondary">{headline(e) || '—'}</td>
-                    <td>{e.latest_run ? fmtAgo(e.latest_run.created_at) : <span className="muted">awaiting baseline</span>}</td>
+                    <td data-label="Refreshed">{e.latest_run ? fmtAgo(e.latest_run.created_at) : <span className="muted">awaiting baseline</span>}</td>
                     <td>
                       {!e.latest_run ? <span className="muted">—</span>
                         : needsAttention(e) ? <span className="change-flag">● changed</span>
@@ -153,7 +156,7 @@ export function WatchlistHome() {
                 ))}
               </tbody>
             </table>
-          </div>
+          </ScrollRegion>
         </section>
       )}
     </main>
