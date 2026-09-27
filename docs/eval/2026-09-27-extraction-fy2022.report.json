@@ -1,0 +1,34 @@
+{
+  "arm": "multi",
+  "slice": "correct_extraction-fy2022+",
+  "model": "claude-sonnet-4-6",
+  "dataset_version": "e6-2026-09-19",
+  "cases_finished": 35,
+  "cases_in_slice": 35,
+  "cases_errored": 0,
+  "metrics": {
+    "false_clear_rate": null,
+    "false_escalate_rate": 0.0571,
+    "boundary_false_clear_rate": null,
+    "false_clear_by_gap_type": {},
+    "no_decision_count": 0,
+    "confusion": {
+      "true_clear": 33,
+      "false_escalate": 2,
+      "true_escalate": 0,
+      "false_clear": 0,
+      "no_decision": 0
+    },
+    "field_accuracy": 0.5263,
+    "field_accuracy_by_field": {
+      "net_income": 0.8,
+      "revenue": 0.7143,
+      "eps": 0.0,
+      "gross_margin": 0.7778
+    },
+    "omission_count": 39,
+    "fabrication_count": 0,
+    "citation_correctness": null,
+    "n_cases": 35
+  }
+}
