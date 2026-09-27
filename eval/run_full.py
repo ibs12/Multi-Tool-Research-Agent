@@ -21,6 +21,10 @@ Properties for a long job:
     PGVECTOR_URL= python eval/run_full.py --arm multi     # ~many hours
     PGVECTOR_URL= python eval/run_full.py --arm both      # sequential
     python eval/run_full.py --report-only                 # score+compare from checkpoints
+
+    # One arm, one slice — e.g. extraction accuracy of the production pipeline,
+    # the number ADR-0012's deltas rest on, without paying for both arms:
+    PGVECTOR_URL= python eval/run_full.py --arm multi --category correct_extraction
 """
 
 from __future__ import annotations
@@ -56,6 +60,10 @@ def load_live_eval_set() -> list[dict]:
     return live
 
 
+def _model() -> str:
+    return os.getenv("CLAUDE_MODEL", "claude-opus-4-8")
+
+
 def _load_checkpoint(arm: str) -> dict:
     ckpt = RUNS_DIR / f"{arm}.checkpoint.jsonl"
     done = {}
@@ -89,6 +97,12 @@ async def _run_case(case: dict, arm: str) -> dict:
 
 async def run_arm_resumable(cases: list[dict], arm: str) -> dict:
     done = _load_checkpoint(arm)
+    # A checkpoint from another model is not a head start, it is contamination:
+    # resuming would silently score one arm on two models.
+    other = {r.get("model") for r in done.values() if r.get("model") not in (None, _model())}
+    if other:
+        raise SystemExit(f"[{arm}] checkpoint has results from {sorted(other)}, but CLAUDE_MODEL="
+                         f"{_model()}. Move eval/runs/{arm}.checkpoint.jsonl aside to start fresh.")
     todo = [c for c in cases if c["id"] not in done]
     print(f"[{arm}] {len(done)} done, {len(todo)} to run", flush=True)
     for i, case in enumerate(todo, 1):
@@ -96,10 +110,75 @@ async def run_arm_resumable(cases: list[dict], arm: str) -> dict:
             result = await _run_case(case, arm)
         except Exception as e:
             result = {"terminal": "no_decision", "fields": {}, "error": str(e)}
+        result["model"] = _model()
         _append_checkpoint(arm, case["id"], result)
         done[case["id"]] = result
         print(f"[{arm}] {i}/{len(todo)} {case['id']} -> {result['terminal']}", flush=True)
     return done
+
+
+def _dataset_version() -> str:
+    manifest = DATASET.parent / "manifest.json"
+    if manifest.exists():
+        return json.loads(manifest.read_text()).get("dataset_version", "unknown")
+    return "unknown"
+
+
+def score_single_arm(cases: list[dict], arm: str, label: str) -> dict | None:
+    """Score one arm on its own — no comparison, just the arm's own numbers.
+
+    Written to eval/runs/<arm>-<label>.report.{json,md}. Only cases this arm has
+    finished are scored, and the report says how many that is, so a partial run
+    can't pass for a complete one.
+    """
+    runs = _load_checkpoint(arm)
+    finished = [c for c in cases if c["id"] in runs]
+    if not finished:
+        print(f"[{arm}] nothing finished yet — no report.", flush=True)
+        return None
+    m = score_dataset(finished, runs)
+    errors = sum(1 for c in finished if runs[c["id"]].get("error"))
+    report = {"arm": arm, "slice": label, "model": _model(), "dataset_version": _dataset_version(),
+              "cases_finished": len(finished), "cases_in_slice": len(cases),
+              "cases_errored": errors, "metrics": m}
+    RUNS_DIR.mkdir(parents=True, exist_ok=True)
+    (RUNS_DIR / f"{arm}-{label}.report.json").write_text(json.dumps(report, indent=2))
+    md = _render_single_md(report)
+    (RUNS_DIR / f"{arm}-{label}.report.md").write_text(md)
+    print(md, flush=True)
+    tracking.record_run(arm, m, {"dataset_version": report["dataset_version"],
+                                 "n_cases": len(finished), "run": f"single-arm:{label}",
+                                 "model": report["model"]})
+    return report
+
+
+def _pct(x) -> str:
+    return "n/a" if x is None else f"{x * 100:.1f}%"
+
+
+def _render_single_md(r: dict) -> str:
+    m = r["metrics"]
+    lines = [
+        f"# Eval — {r['arm']} arm, `{r['slice']}`",
+        "",
+        f"Model `{r['model']}` · dataset `{r['dataset_version']}` · "
+        f"**{r['cases_finished']}/{r['cases_in_slice']} cases finished** "
+        f"({r['cases_errored']} errored, scored as no decision)",
+        "",
+        "| Metric | Value |",
+        "|---|---|",
+        f"| Field accuracy | {_pct(m['field_accuracy'])} |",
+        f"| Citation correctness | {_pct(m['citation_correctness'])} |",
+        f"| Fabricated figures | {m['fabrication_count']} |",
+        f"| Omitted figures | {m['omission_count']} |",
+        f"| False-escalate rate | {_pct(m['false_escalate_rate'])} |",
+        f"| No decision | {m['no_decision_count']} |",
+        "",
+        "| Field | Accuracy |",
+        "|---|---|",
+    ]
+    lines += [f"| {f} | {_pct(v)} |" for f, v in sorted(m["field_accuracy_by_field"].items())]
+    return "\n".join(lines) + "\n"
 
 
 def _score_and_record(cases: list[dict]) -> dict | None:
@@ -133,11 +212,15 @@ def main() -> None:
     ap = argparse.ArgumentParser()
     ap.add_argument("--arm", choices=["single", "multi", "both"], default="both")
     ap.add_argument("--limit", type=int, default=0, help="cap cases (smoke)")
+    ap.add_argument("--category", action="append", default=[],
+                    help="only these case categories (repeatable), e.g. correct_extraction")
     ap.add_argument("--report-only", action="store_true",
                     help="score+compare from existing checkpoints, run nothing")
     args = ap.parse_args()
 
     cases = load_live_eval_set()
+    if args.category:
+        cases = [c for c in cases if c["category"] in set(args.category)]
     if args.limit:
         cases = cases[:args.limit]
     print(f"live eval set: {len(cases)} cases "
@@ -149,6 +232,12 @@ def main() -> None:
         for arm in arms:
             asyncio.run(run_arm_resumable(cases, arm))
 
+    # A slice or a single arm can't be a before/after comparison — score it alone.
+    if args.category or args.arm != "both":
+        label = "+".join(sorted(args.category)) or "all"
+        for arm in (["single", "multi"] if args.arm == "both" else [args.arm]):
+            score_single_arm(cases, arm, label)
+        return
     _score_and_record(cases)
 
 
