@@ -1,11 +1,12 @@
 # RUNBOOK — the full before/after headline run (E5)
 
-The single-vs-multi headline comparison over the **live eval set** (134 cases:
+The single-vs-multi headline comparison over the **live eval set** (147 cases:
 the frozen dataset's 124 correct/ambiguous/missing cases + 10 live escalation
-queries). Each multi-agent case is a full research → risk → compliance pipeline
+queries + the 13-case boundary slice). The boundary slice alone — the headline
+safety metric — is `--boundary-only`, ~13 runs. Each multi-agent case is a full research → risk → compliance pipeline
 against live web/SEC, so it takes **minutes** — budget:
 
-| Arm | Per case | 134 cases |
+| Arm | Per case | 147 cases |
 |---|---|---|
 | single | ~1–2 min | ~2–4 h |
 | multi | ~5–7 min | **~12–16 h** |
