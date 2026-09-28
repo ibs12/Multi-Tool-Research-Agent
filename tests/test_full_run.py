@@ -109,3 +109,44 @@ def test_fiscal_year_label_follows_the_filer():
     assert fy({"end": "2023-12-31"}) == 2023
     assert fy({"end": "2022-01-02"}) == 2021      # J&J 52/53-week year closing in early Jan
     assert fy({"end": "2023-01-01"}) == 2022
+
+
+# ── the boundary slice (E6.Q3) ────────────────────────────────────────────────
+
+def _boundary():
+    from eval.schema import read_jsonl, validate
+    cases = read_jsonl(run_full.BOUNDARY)
+    return cases, validate
+
+
+def test_boundary_slice_is_valid_and_measurable():
+    cases, validate = _boundary()
+    assert all(validate(c) == [] for c in cases)
+    assert all(c["is_boundary"] for c in cases)
+    # the headline metric is computed over boundary cases expected to ESCALATE
+    assert sum(c["expected_verdict"] == "escalate" for c in cases) >= 5
+    assert sum(c["expected_verdict"] == "clear" for c in cases) >= 5
+    assert len({c["id"] for c in cases}) == len(cases)
+
+
+def test_boundary_cases_stay_inside_the_years_the_tools_reach():
+    """Outside the tools' window a case escalates for lack of data — measuring
+    scope, not judgement (docs/eval/2026-09-27-extraction-fy2022.md)."""
+    cases, _ = _boundary()
+    assert all(2023 <= run_full._fiscal_year(c) <= 2024 for c in cases)
+
+
+def test_every_boundary_case_explains_itself():
+    cases, _ = _boundary()
+    for c in cases:
+        assert c["source"].startswith("curated-boundary:rule-")
+        assert "Evidence:" in c["notes"] and len(c["notes"]) > 120
+
+
+def test_boundary_cases_run_live_and_can_be_selected_alone():
+    live = run_full.load_live_eval_set()
+    boundary = [c for c in live if c.get("is_boundary")]
+    assert len(boundary) == len(_boundary()[0])
+    # boundary should-escalate cases are real filers, so unlike the synthetic
+    # dataset escalations they DO run live
+    assert any(c["category"] == "should_escalate" for c in boundary)

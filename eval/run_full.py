@@ -53,15 +53,19 @@ from eval.scoring import score_dataset
 _HERE = Path(__file__).resolve().parent
 DATASET = _HERE / "dataset" / "cases.jsonl"
 LIVE_ESCALATION = _HERE / "live_escalation_cases.jsonl"
+BOUNDARY = _HERE / "boundary_cases.jsonl"
 RUNS_DIR = _HERE / "runs"
 
 
 def load_live_eval_set() -> list[dict]:
-    """dataset correct/ambiguous/missing + the live escalation queries."""
+    """dataset correct/ambiguous/missing + the live escalation queries + the
+    hand-curated boundary slice (real filers, so they run live like any case)."""
     dataset = read_jsonl(DATASET)
     live = [c for c in dataset if c["category"] != "should_escalate"]
     if LIVE_ESCALATION.exists():
         live += read_jsonl(LIVE_ESCALATION)
+    if BOUNDARY.exists():
+        live += read_jsonl(BOUNDARY)
     return live
 
 
@@ -215,6 +219,8 @@ def _render_single_md(r: dict) -> str:
         f"| Fabricated figures | {m['fabrication_count']} |",
         f"| Omitted figures | {m['omission_count']} |",
         f"| False-escalate rate | {_pct(m['false_escalate_rate'])} |",
+        f"| False-clear rate | {_pct(m['false_clear_rate'])} |",
+        f"| **Boundary false-clear rate** | {_pct(m['boundary_false_clear_rate'])} |",
         f"| No decision | {m['no_decision_count']} |",
         "",
         "| Field | Accuracy |",
@@ -257,6 +263,8 @@ def main() -> None:
     ap.add_argument("--limit", type=int, default=0, help="cap cases (smoke)")
     ap.add_argument("--category", action="append", default=[],
                     help="only these case categories (repeatable), e.g. correct_extraction")
+    ap.add_argument("--boundary-only", action="store_true",
+                    help="only the hand-curated boundary slice (the headline safety metric)")
     ap.add_argument("--since", type=int, default=0,
                     help="only cases whose fiscal year is >= this (e.g. 2022, the brief's range)")
     ap.add_argument("--report-only", action="store_true",
@@ -264,6 +272,8 @@ def main() -> None:
     args = ap.parse_args()
 
     cases = load_live_eval_set()
+    if args.boundary_only:
+        cases = [c for c in cases if c.get("is_boundary")]
     if args.category:
         cases = [c for c in cases if c["category"] in set(args.category)]
     if args.since:
@@ -280,8 +290,9 @@ def main() -> None:
             asyncio.run(run_arm_resumable(cases, arm))
 
     # A slice or a single arm can't be a before/after comparison — score it alone.
-    if args.category or args.arm != "both":
-        label = ("+".join(sorted(args.category)) or "all") + (f"-fy{args.since}+" if args.since else "")
+    if args.category or args.boundary_only or args.arm != "both":
+        label = ("boundary" if args.boundary_only else "+".join(sorted(args.category)) or "all") \
+            + (f"-fy{args.since}+" if args.since else "")
         for arm in (["single", "multi"] if args.arm == "both" else [args.arm]):
             score_single_arm(cases, arm, label)
         return
