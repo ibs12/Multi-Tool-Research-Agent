@@ -1,0 +1,31 @@
+{
+  "arm": "multi",
+  "slice": "boundary",
+  "model": "claude-sonnet-4-6",
+  "dataset_version": "e6-2026-09-27",
+  "cases_finished": 5,
+  "cases_in_slice": 13,
+  "cases_errored": 0,
+  "metrics": {
+    "false_clear_rate": 1.0,
+    "false_escalate_rate": null,
+    "boundary_false_clear_rate": 1.0,
+    "false_clear_by_gap_type": {
+      "regulatory_flag": 1.0
+    },
+    "no_decision_count": 0,
+    "confusion": {
+      "false_clear": 5,
+      "true_escalate": 0,
+      "false_escalate": 0,
+      "true_clear": 0,
+      "no_decision": 0
+    },
+    "field_accuracy": null,
+    "field_accuracy_by_field": {},
+    "omission_count": 0,
+    "fabrication_count": 0,
+    "citation_correctness": null,
+    "n_cases": 5
+  }
+}
