@@ -56,10 +56,20 @@ export function FiguresTable({ figures }: { figures: Figures }) {
 /** What changed between a company's last two runs. An empty delta is an answer, not a gap. */
 export function DeltaList({ delta, limit }: { delta: Delta | null; limit?: number }) {
   if (!delta) return <p className="muted">Only one run so far — the next refresh will show what changed.</p>;
-  if (delta.is_empty) return <p className="quiet">No material change since the previous run.</p>;
+  const skipped = delta.not_compared ?? [];
+  const skippedNote = skipped.length > 0 && (
+    <p className="muted small">
+      Not compared — the figure's definition changed between runs, so a difference would not be news:{' '}
+      {skipped.map(s => `${fieldLabel(s.field)} ${s.period}`).join(', ')}.
+    </p>
+  );
+  if (delta.is_empty) {
+    return <><p className="quiet">No material change since the previous run.</p>{skippedNote}</>;
+  }
   const changes = limit ? delta.figure_changes.slice(0, limit) : delta.figure_changes;
   const more = delta.figure_changes.length - changes.length;
   return (
+    <>
     <ul className="delta-list">
       {delta.verdict_change && (
         <li className="delta-item delta-verdict">
@@ -85,6 +95,8 @@ export function DeltaList({ delta, limit }: { delta: Delta | null; limit?: numbe
       })}
       {more > 0 && <li className="delta-item muted">+{more} more</li>}
     </ul>
+    {!limit && skippedNote}
+    </>
   );
 }
 

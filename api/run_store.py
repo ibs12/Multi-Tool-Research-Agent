@@ -488,6 +488,7 @@ def build_run_record(query: str, agent_mode: str, result: dict,
     structured read of the snapshot table — the object deltas compare (ADR-0012).
     """
     from agent.brief_parser import extract_all_periods
+    from agent.deltas import EPS_REPORTED_BASIS
     handoff = result.get("handoff", {}) or {}
     company = result.get("company_target", "")
     return {
@@ -507,4 +508,6 @@ def build_run_record(query: str, agent_mode: str, result: dict,
         "elapsed_seconds": elapsed,
         "model": os.getenv("CLAUDE_MODEL", "claude-opus-4-8"),
         "signal": signal,
+        # What the figures mean — deltas only compare runs that share it (ADR-0012).
+        "figures_basis": {"eps_reported": EPS_REPORTED_BASIS},
     }
