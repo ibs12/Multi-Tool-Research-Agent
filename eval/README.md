@@ -82,17 +82,48 @@ hand-eyeballing at volume (the TakeMeter antidote):
   signal); (b) controlled **synthetic perturbation** (a citation made
   unverifiable), flagged `synthetic: true`.
 
-## The boundary slice (E6.Q3) — human curation, not generated
+## The boundary slice (E6.Q3) — curated verdicts, sourced facts
 
-E1 reserves ~1/3 of the should-escalate + missing/conflicting cases as **boundary
-cases**: ones where a reasonable compliance reviewer could plausibly go either
-way, with `expected_verdict` assigned **per case** (not by bucket). Target ~18
-(~10 should-escalate + ~8 missing/conflicting). These are **hand-authored** in
-`boundary_cases.jsonl`, each with a written `notes` rationale for why it is
-marginal — deliberately the one place hand-labeling earns its keep (bounded and
-legible, the opposite of an opaque hand-labeled set). They are merged with the
-generated set at scoring time and the false-clear rate is reported broken out
-clear-cut vs boundary (E3).
+Boundary cases are ones where a reasonable compliance reviewer could plausibly
+go either way, each with its verdict assigned **per case** and a written
+rationale. They live in `boundary_cases.jsonl`, built by
+`build_boundary_cases.py`:
+
+```bash
+PYTHONPATH=. python eval/build_boundary_cases.py   # re-checks every cited filing on EDGAR
+PGVECTOR_URL= python eval/run_full.py --arm multi --boundary-only   # ~13 runs
+```
+
+**Which cases and which verdict are human judgements; nothing factual is typed
+in.** Every figure comes from SEC XBRL, and every filing a rationale cites is
+looked up on EDGAR at build time — the build fails if one is missing.
+
+**The labelling rule**, from the compliance policy (escalate for "a regulatory
+red flag", "core figures unverifiable", "sources conflict irreconcilably"):
+
+- **escalate** — the requested year's *annual* statements carry the flag:
+  (a) an 8-K Item 4.02 non-reliance notice on them, or (b) the annual report
+  filed materially late because of a review of the company's own accounting or
+  controls.
+- **clear** — the flag is adjacent, not on them: non-reliance limited to interim
+  quarters, a late filing by days or for procedural/strategic reasons, an
+  amendment that changed no figures.
+
+They are *boundary* cases because the figures eventually filed look normal and
+audited in every one; the flag (or its absence) lives in a different filing. A
+figures-only review clears all of them. The candidates were found by scanning
+the ~700 largest SEC filers for 2024–2026 non-reliance notices and late
+filings, and every case sits in FY2023–FY2024, inside the years the research
+tools reach — outside that window a case escalates for lack of data, which
+measures scope, not judgement.
+
+Current slice: **13 cases — 5 escalate, 8 clear.** That is below the ~10
+escalate the original design targeted; the boundary false-clear rate is
+therefore computed over 5 cases and should be read as indicative. Three of the
+escalations are deliberately the closest calls (ADM FY2023, Axon FY2024,
+Autodesk FY2024 — the flag touched a segment note, a balance-sheet
+classification, or non-GAAP metrics, not the reported totals). Review those
+labels first if you disagree with the rule.
 
 ## Known limitation — stale-prior escalation (the SpaceX case)
 
@@ -127,6 +158,5 @@ Consequences, applied here:
 - The `missing_conflicting` bucket currently sources the **missing** signal
   (untagged concept). The **conflicting** signal (two concepts that should
   reconcile but disagree beyond tolerance) is not yet implemented.
-- Boundary cases (`boundary_cases.jsonl`) await hand-curation.
 - Forward-estimate tested fields (consensus band, E1/R2) are not yet sourced —
   they need analyst consensus (yfinance), not XBRL.
