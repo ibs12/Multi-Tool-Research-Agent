@@ -71,6 +71,17 @@ def _fiscal_year(case: dict) -> int | None:
     return int(m.group(1)) if m else None
 
 
+def case_fingerprint(case: dict) -> str:
+    """What a checkpointed answer was an answer TO: the query it ran (company +
+    period) and the key it will be scored against. If the dataset is
+    regenerated and a case's key changes — the #58 fiscal-year relabel moved
+    Walmart's and NVIDIA's figures between periods — the old answer must be
+    re-run, not silently scored against the new key."""
+    import hashlib
+    blob = json.dumps([case["company"], case["period"], case["tested_fields"]], sort_keys=True)
+    return hashlib.sha1(blob.encode()).hexdigest()[:12]
+
+
 def _model() -> str:
     return os.getenv("CLAUDE_MODEL", "claude-opus-4-8")
 
@@ -125,14 +136,24 @@ async def run_arm_resumable(cases: list[dict], arm: str) -> dict:
     if other:
         raise SystemExit(f"[{arm}] checkpoint has results from {sorted(other)}, but CLAUDE_MODEL="
                          f"{_model()}. Move eval/runs/{arm}.checkpoint.jsonl aside to start fresh.")
+    # Re-run a finished case only if what it answered has changed. Lines written
+    # before fingerprints existed are kept: their ids still carry the period
+    # text the query used.
+    stale = [c for c in cases if c["id"] in done
+             and done[c["id"]].get("case_fp") not in (None, case_fingerprint(c))]
+    for c in stale:
+        del done[c["id"]]
     todo = [c for c in cases if c["id"] not in done]
-    print(f"[{arm}] {len(done)} done, {len(todo)} to run", flush=True)
+    print(f"[{arm}] {len(done)} done, {len(todo)} to run"
+          + (f" ({len(stale)} re-run: answer key changed)" if stale else ""), flush=True)
     for i, case in enumerate(todo, 1):
         try:
             result = await _run_case(case, arm)
         except Exception as e:
             result = {"terminal": "no_decision", "fields": {}, "error": str(e)}
         result["model"] = _model()
+        result["dataset_version"] = _dataset_version()
+        result["case_fp"] = case_fingerprint(case)
         _append_checkpoint(arm, case["id"], result)
         done[case["id"]] = result
         print(f"[{arm}] {i}/{len(todo)} {case['id']} -> {result['terminal']}", flush=True)

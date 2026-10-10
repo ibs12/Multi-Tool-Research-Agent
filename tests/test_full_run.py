@@ -76,3 +76,36 @@ def test_since_keeps_only_in_range_fiscal_years():
              if c["category"] == "correct_extraction" and (run_full._fiscal_year(c) or 0) >= 2022]
     assert len(cases) == 35
     assert all(run_full._fiscal_year(c) >= 2022 for c in cases)
+
+
+def test_a_changed_answer_key_forces_a_rerun(tmp_path, monkeypatch):
+    """#58: a regenerated dataset may move figures between periods; an answer
+    checkpointed against the old key must be re-run, not re-scored."""
+    import asyncio
+    monkeypatch.setattr(run_full, "RUNS_DIR", tmp_path)
+    monkeypatch.setenv("CLAUDE_MODEL", "claude-sonnet-4-6")
+    cases = run_full.load_live_eval_set()[:3]
+    old = dict(cases[0], tested_fields={"revenue": {"expected_value": 1, "source_accession": "x"}})
+    run_full._append_checkpoint("multi", cases[0]["id"], {"terminal": "brief", "fields": {},
+        "model": "claude-sonnet-4-6", "case_fp": run_full.case_fingerprint(old)})
+    run_full._append_checkpoint("multi", cases[1]["id"], {"terminal": "brief", "fields": {},
+        "model": "claude-sonnet-4-6", "case_fp": run_full.case_fingerprint(cases[1])})
+    run_full._append_checkpoint("multi", cases[2]["id"], {"terminal": "brief", "fields": {},
+        "model": "claude-sonnet-4-6"})                     # legacy line, no fingerprint
+    ran = []
+
+    async def fake(case, arm):
+        ran.append(case["id"])
+        return {"terminal": "brief", "fields": {}}
+    monkeypatch.setattr(run_full, "_run_case", fake)
+    asyncio.run(run_full.run_arm_resumable(cases, "multi"))
+    assert ran == [cases[0]["id"]]                         # only the changed key re-runs
+
+
+def test_fiscal_year_label_follows_the_filer():
+    from eval.generate_dataset import fiscal_year_label as fy
+    assert fy({"end": "2025-01-31"}) == 2025      # Walmart / NVIDIA: FY named by end year
+    assert fy({"end": "2024-06-30"}) == 2024      # Microsoft
+    assert fy({"end": "2023-12-31"}) == 2023
+    assert fy({"end": "2022-01-02"}) == 2021      # J&J 52/53-week year closing in early Jan
+    assert fy({"end": "2023-01-01"}) == 2022

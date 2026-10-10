@@ -80,6 +80,25 @@ def _revenue_frame(facts: dict, frame: str):
     return None, None
 
 
+def fiscal_year_label(entry: dict) -> int:
+    """The filer's own fiscal-year number for an annual XBRL fact.
+
+    SEC frames are keyed by *calendar* year: `CY2024` is whichever annual period
+    best aligns with calendar 2024 — for a January year-end (Walmart, NVIDIA)
+    that is the fiscal year ending Jan 2025, which the company calls FY2025.
+    Labelling the case "FY2024" (as this generator once did) put next year's
+    figures in the answer key for every non-December filer (#58).
+
+    The label is the year the fiscal year ends — the convention filers and Yahoo
+    (and so the agent) use — taken one week before the end date. The week covers
+    52/53-week filers whose year closes in the first days of January: Johnson &
+    Johnson's fiscal 2021 ended 2 Jan 2022, and Yahoo dates it 2021-12-31. The
+    raw end year would call it FY2022 and collide with the real FY2022.
+    """
+    from datetime import date, timedelta
+    return (date.fromisoformat(entry["end"][:10]) - timedelta(days=7)).year
+
+
 def _fv(entry: dict) -> dict:
     """A tested_fields spec from a frame entry."""
     return {"expected_value": entry["val"], "source_accession": entry["accn"]}
@@ -108,12 +127,14 @@ def build_correct_extraction(company: str, cik: int, facts: dict) -> list[Case]:
             margin = round(gp["val"] / rev["val"] * 100, 1)
             tested["gross_margin"] = {"expected_value": margin, "source_accession": gp["accn"]}
 
+        fy = fiscal_year_label(ni)
         cases.append(Case(
-            id=f"ce-{cik}-{year}", company=company, cik=cik, accession=ni["accn"],
-            period=f"FY{year}", category="correct_extraction", tested_fields=tested,
+            id=f"ce-{cik}-{fy}", company=company, cik=cik, accession=ni["accn"],
+            period=f"FY{fy}", category="correct_extraction", tested_fields=tested,
             expected_verdict="clear", gap_type="none",
             source="xbrl-frames-canonical",
-            notes=f"Clean annual values for CY{year}, all accession-pinned.",
+            notes=f"Clean annual values for the fiscal year ending {ni['end']} "
+                  f"(SEC frame CY{year}), all accession-pinned.",
         ))
     return cases
 
@@ -188,9 +209,10 @@ def build_missing_gross_margin(company: str, cik: int, facts: dict) -> list[Case
         rev, _ = _revenue_frame(facts, frame)
         if not (ni and rev):
             continue
+        fy = fiscal_year_label(ni)
         cases.append(Case(
-            id=f"miss-{cik}-{year}", company=company, cik=cik, accession=ni["accn"],
-            period=f"FY{year}", category="missing_conflicting",
+            id=f"miss-{cik}-{fy}", company=company, cik=cik, accession=ni["accn"],
+            period=f"FY{fy}", category="missing_conflicting",
             tested_fields={
                 "net_income": _fv(ni),
                 "revenue": _fv(rev),
@@ -281,6 +303,10 @@ def generate() -> dict:
     rng.shuffle(cases)
 
     DATASET_DIR.mkdir(parents=True, exist_ok=True)
+    ids = [c.id for c in cases]
+    dupes = sorted({i for i in ids if ids.count(i) > 1})
+    if dupes:   # a labelling rule that maps two periods to one fiscal year
+        raise SystemExit(f"duplicate case ids: {dupes}")
     n = write_jsonl(cases, DATASET_DIR / "cases.jsonl")
 
     counts = {
