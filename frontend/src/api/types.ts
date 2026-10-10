@@ -92,6 +92,8 @@ export interface Delta {
   figure_changes: FigureChange[];
   verdict_change: { before: string; after: string } | null;
   red_flag_change: { before: number; after: number } | null;
+  /** Figures both runs read but on different definitions — unknown, not a change. */
+  not_compared?: { period: string; field: string; reason: string }[];
   is_empty: boolean;
 }
 
