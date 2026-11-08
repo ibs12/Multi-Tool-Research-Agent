@@ -44,6 +44,28 @@ def _permalink(run_id: str | None) -> str | None:
     return f"{base}/?run={run_id}" if base and run_id else None
 
 
+class RefreshFailed(Exception):
+    """The agent could not run — an outage, not a finding."""
+
+
+def _infrastructure_failure(final: dict) -> str | None:
+    """Why a run ended for reasons unrelated to the company, or None.
+
+    When compliance cannot run (API credit exhausted, auth, rate limit, network)
+    it escalates by design — interactively, never shipping an unverified brief
+    is right. But for the worker that "escalation" is an outage, not a
+    compliance finding: saved as one, a credit outage in Oct–Nov 2026 filled
+    every company's timeline with 34 identical escalations and consumed the
+    signals that triggered them.
+    """
+    from agent.nodes.agents import COMPLIANCE_ERROR
+    verdict = (final.get("handoff") or {}).get("compliance_verdict") or {}
+    for reason in verdict.get("reasons") or []:
+        if str(reason).startswith(COMPLIANCE_ERROR):
+            return str(reason)
+    return None
+
+
 async def _refresh(company: dict, signal: dict, previous: dict | None) -> tuple[dict, str | None]:
     """Run the agent for one company and persist the result."""
     from agent.graph import graph
@@ -53,6 +75,9 @@ async def _refresh(company: dict, signal: dict, previous: dict | None) -> tuple[
     query = f"Analyse {company['name']} investment outlook"
     started = time.time()
     final = await graph.ainvoke(make_initial_state(query, agent_mode="multi"))
+    outage = _infrastructure_failure(final)
+    if outage:
+        raise RefreshFailed(outage)
 
     if final.get("termination_reason") == "escalated":
         report = ""                       # escalation ships no brief (ADR-0009)
@@ -74,7 +99,7 @@ async def sweep(dry_run: bool = False, only: str | None = None) -> dict:
 
     started_at = datetime.now(timezone.utc).isoformat()
     checked = refreshed = notified = 0
-    error = None
+    errors: list[str] = []
 
     for company in companies:
         checked += 1
@@ -86,21 +111,25 @@ async def sweep(dry_run: bool = False, only: str | None = None) -> dict:
         signal = ({"kind": "baseline", "detail": "first run for this company"}
                   if not history else detect(company, history[0].get("created_at")))
 
-        # Record the newest accession AFTER deciding, and regardless of whether
-        # we refresh — it is the baseline the next sweep compares against, and
-        # letting it drift would make a Signal fire forever.
+        # Recording the newest accession as "seen" is what consumes a filing
+        # Signal. It happens on every sweep where the company is quiet — it is
+        # the baseline the next sweep compares against, and letting it drift
+        # would make a Signal fire forever — and after a Refresh that SUCCEEDED.
         #
-        # Never in a dry run. Recording a filing as "seen" is what consumes its
-        # Signal, so a dry run that wrote here would report "WOULD refresh" and
-        # in the same breath guarantee the real sweep says "no signal" — the
-        # change would be silently swallowed by the act of checking for it.
-        if company.get("cik") and not dry_run:
-            newest = newest_accession(company["cik"])
+        # Not when a Refresh fails: the filing was never researched, so its
+        # Signal must fire again next sweep (a retry). And never in a dry run,
+        # which would report "WOULD refresh" and in the same breath guarantee
+        # the real sweep says "no signal".
+        newest = (newest_accession(company["cik"])
+                  if company.get("cik") and not dry_run else None)
+
+        async def mark_seen():
             if newest and newest != company.get("last_seen_accession"):
                 await set_last_seen(key, newest)
 
         if not signal:
             print(f"  · {name}: no signal", flush=True)
+            await mark_seen()
             continue
         if dry_run:
             print(f"  ⇒ {name}: WOULD refresh — {signal.get('detail')}", flush=True)
@@ -110,10 +139,13 @@ async def sweep(dry_run: bool = False, only: str | None = None) -> dict:
         try:
             record, run_id = await _refresh(company, signal, history[0] if history else None)
         except Exception as exc:                     # one company must not sink the sweep
-            error = f"{name}: {exc}"
-            print(f"    ! failed: {exc}", flush=True)
+            # Nothing saved, nothing marked seen: the Signal retries next sweep,
+            # and the price baseline (the last saved Run) is untouched.
+            errors.append(f"{name}: {exc}"[:300])
+            print(f"    ! failed (will retry next sweep): {exc}", flush=True)
             continue
         refreshed += 1
+        await mark_seen()
 
         delta = compute_delta(history[0] if history else None, record)
         escalated = record.get("termination_reason") == "escalated"
@@ -127,6 +159,7 @@ async def sweep(dry_run: bool = False, only: str | None = None) -> dict:
 
     # A dry run is not a sweep: recording it would make a manual check from a
     # laptop look like a cron heartbeat and mask a dead worker (ADR-0011).
+    error = (f"{len(errors)} refresh(es) failed — " + " | ".join(errors))[:2000] if errors else None
     sweep_id = None if dry_run else await record_sweep(
         checked, refreshed, notified, started_at=started_at, error=error)
     summary = {"sweep_id": sweep_id, "checked": checked, "refreshed": refreshed,
