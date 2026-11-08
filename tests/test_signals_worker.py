@@ -328,3 +328,100 @@ def test_a_sweep_is_recorded_on_postgres_too(monkeypatch):
     sweep_id = asyncio.run(run_store.record_sweep(
         3, 1, 0, started_at="2026-09-23T18:00:00+00:00"))
     assert sweep_id is not None and len(bound) == 1
+
+
+# ── an outage is a failed refresh, not a finding ──────────────────────────────
+# Oct–Nov 2026: the Anthropic credit ran out, compliance's fail-safe escalated
+# every refresh, and the worker saved 34 identical "escalations" — consuming
+# the 22 filing and 12 price Signals that triggered them.
+
+def _outage_graph(monkeypatch):
+    class _Graph:
+        async def ainvoke(self, state):
+            return {"termination_reason": "escalated", "handoff": {
+                "compliance_verdict": {"verdict": "escalate", "gap_type": "regulatory_flag",
+                                       "reasons": ["[Compliance Error] Error code: 400 - credit balance is too low"]},
+                "escalation": {"reason": "Compliance check could not run"}}}
+    import agent.graph
+    monkeypatch.setattr(agent.graph, "graph", _Graph())
+
+
+def test_an_outage_is_not_saved_and_does_not_consume_the_signal(monkeypatch):
+    _watch(monkeypatch, [{"company_key": "cik:2488", "name": "AMD", "cik": 2488,
+                          "ticker": "AMD", "last_seen_accession": "acc-1"}])
+    monkeypatch.setattr(watch_worker, "detect", lambda c, since: {"kind": "filing", "detail": "8-K"})
+    monkeypatch.setattr(watch_worker, "newest_accession", lambda cik: "acc-2")
+
+    async def _history(*a, **k):
+        return [{"id": "r1", "figures": {}, "created_at": "2026-09-28T22:36:00+00:00"}]
+    monkeypatch.setattr(watch_worker, "runs_for_company", _history)
+    _outage_graph(monkeypatch)
+    saved, seen, sent = [], [], []
+
+    async def _save(rec):
+        saved.append(rec)
+        return "x"
+
+    async def _seen(*a, **k):
+        seen.append(a)
+    monkeypatch.setattr(watch_worker, "save_run", _save)
+    monkeypatch.setattr(watch_worker, "set_last_seen", _seen)
+    monkeypatch.setattr(watch_worker, "notify", lambda *a, **k: sent.append(a) or True)
+
+    summary = asyncio.run(watch_worker.sweep())
+    assert saved == [], "an outage must not be stored as an escalation"
+    assert seen == [], "the filing was never researched, so its Signal must fire again"
+    assert sent == [] and summary["refreshed"] == 0
+    assert "credit balance" in summary["error"] and "1 refresh(es) failed" in summary["error"]
+    # ...and the sweep is still recorded, so silence stays distinguishable from a dead cron
+    assert asyncio.run(run_store.recent_sweeps())[0]["error"] == summary["error"]
+
+
+def test_a_successful_refresh_consumes_the_signal(monkeypatch):
+    _watch(monkeypatch, [{"company_key": "cik:1", "name": "NVIDIA Corp", "cik": 1,
+                          "ticker": None, "last_seen_accession": "acc-1"}])
+    monkeypatch.setattr(watch_worker, "detect", lambda c, since: {"kind": "filing", "detail": "10-Q"})
+    monkeypatch.setattr(watch_worker, "newest_accession", lambda cik: "acc-2")
+
+    async def _history(*a, **k):
+        return [{"id": "r1", "figures": {}}]
+    monkeypatch.setattr(watch_worker, "runs_for_company", _history)
+
+    async def _ok(company, signal, previous):
+        return {"termination_reason": "completed", "figures": {}}, "run-2"
+    monkeypatch.setattr(watch_worker, "_refresh", _ok)
+    seen = []
+
+    async def _seen(key, acc, *a, **k):
+        seen.append((key, acc))
+    monkeypatch.setattr(watch_worker, "set_last_seen", _seen)
+    asyncio.run(watch_worker.sweep())
+    assert seen == [("cik:1", "acc-2")]
+
+
+def test_a_quiet_company_still_advances_its_baseline(monkeypatch):
+    """ADR-0011: the baseline moves on every quiet sweep, or a Signal fires forever."""
+    _watch(monkeypatch, [{"company_key": "cik:1", "name": "Quiet Co", "cik": 1,
+                          "ticker": None, "last_seen_accession": "acc-1"}])
+    monkeypatch.setattr(watch_worker, "detect", lambda c, since: None)
+    monkeypatch.setattr(watch_worker, "newest_accession", lambda cik: "acc-9")
+
+    async def _history(*a, **k):
+        return [{"id": "r1", "figures": {}}]
+    monkeypatch.setattr(watch_worker, "runs_for_company", _history)
+    _never_refresh(monkeypatch)
+    seen = []
+
+    async def _seen(key, acc, *a, **k):
+        seen.append(acc)
+    monkeypatch.setattr(watch_worker, "set_last_seen", _seen)
+    asyncio.run(watch_worker.sweep())
+    assert seen == ["acc-9"]
+
+
+def test_a_genuine_escalation_is_still_saved_and_notified(monkeypatch):
+    """Only an outage is filtered — a real compliance escalation is the product working."""
+    from watch_worker import _infrastructure_failure
+    real = {"handoff": {"compliance_verdict": {"verdict": "escalate",
+            "reasons": ["Revenue cannot be verified against any primary source"]}}}
+    assert _infrastructure_failure(real) is None

@@ -76,6 +76,19 @@ the other way round, or an unscheduled service boots and sweeps immediately.
 A cron service runs on schedule and exits, so you pay execution time rather
 than an always-on second service.
 
+## When a refresh fails
+
+If the agent cannot run — exhausted API credit, an auth or rate-limit error, a
+network outage — compliance cannot run either, and its fail-safe escalates. For
+an interactive run that is right (never ship an unverified brief), but for the
+worker it is an outage, not a finding. The worker therefore treats it as a
+**failed refresh**: nothing is saved or notified, the filing is not marked as
+seen and the price baseline is not reset, so the Signal fires again on the next
+sweep. The sweep's `error` says which refreshes failed and why.
+
+(Before this, a credit outage in Oct–Nov 2026 stored 34 identical
+"escalations" across all ten companies and consumed the Signals behind them.)
+
 ## Verify it is alive
 
 ```bash
