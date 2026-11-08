@@ -14,6 +14,7 @@ Rewritten to use httpx.AsyncClient so all HTTP calls are non-blocking.
 from __future__ import annotations
 
 import re
+from datetime import date, timedelta
 
 import httpx
 
@@ -24,6 +25,28 @@ TICKER_MAP_URL   = "https://www.sec.gov/files/company_tickers.json"
 
 HIGH_VALUE_FORMS = {"10-K", "10-Q", "8-K", "DEF 14A"}
 MAX_RESULTS      = 5
+
+# ── Regulatory red flags ──────────────────────────────────────────────────────
+# Filings that bear on whether a company's reported figures can be relied on.
+# The compliance policy escalates on "a regulatory red flag", but until these
+# were surfaced the agent could not see one: NT/amendment forms were filtered
+# out and an 8-K was listed only as "8-K", its item codes dropped. Every
+# should-escalate boundary case was cleared as a result (docs/eval/2026-10-10).
+#
+# They are scanned across the company's whole recent history, not the five
+# newest filings: a non-reliance notice from 2024 is long buried by 2026.
+RED_FLAG_8K_ITEMS = {
+    "4.02": "Non-reliance on previously issued financial statements",
+    "4.01": "Change in the company's certifying accountant (auditor)",
+    "3.01": "Notice of delisting or failure to satisfy a listing standard",
+}
+RED_FLAG_FORMS = {
+    "NT 10-K": "Late annual report (notification of late filing)",
+    "NT 10-Q": "Late quarterly report (notification of late filing)",
+    "10-K/A": "Amended annual report — check whether reported figures changed",
+}
+FLAG_LOOKBACK_DAYS = 3 * 365          # the fiscal years the brief reports on
+MAX_FLAGS          = 8
 REQUEST_TIMEOUT  = 12
 
 HEADERS = {
@@ -53,22 +76,29 @@ class SecEdgarTool:
         ticker        = _extract_ticker(company)
         company_clean = _strip_ticker(company)
         filings: list[dict] = []
+        flags: list[dict] | None = None      # None = could not check (no CIK)
+        cik = ""
 
         # Strategy 1: ticker → CIK → submissions API (structured, reliable)
         if ticker:
             cik = await self._ticker_to_cik(ticker)
             if cik:
-                filings = await self._filings_from_submissions(cik, max_results)
+                filings, flags = await self._filings_from_submissions(cik, max_results)
 
         # Strategy 2: full-text search by ticker
         if not filings and ticker:
-            filings = await self._efts_search(ticker, max_results)
+            filings, cik = await self._efts_search(ticker, max_results)
 
         # Strategy 3: full-text search by company name
         if not filings:
-            filings = await self._efts_search(company_clean, max_results)
+            filings, cik = await self._efts_search(company_clean, max_results)
 
-        return _format_results(company, filings)
+        # Red flags need the filer's full history, so fetch it even when the
+        # filing list came from full-text search.
+        if flags is None and cik:
+            flags = await self._flags_for_cik(cik)
+
+        return _format_results(company, filings, flags)
 
     # -- Strategy 1: Submissions API ------------------------------------------
 
@@ -83,7 +113,13 @@ class SecEdgarTool:
             pass
         return ""
 
-    async def _filings_from_submissions(self, cik: str, max_results: int) -> list[dict]:
+    async def _flags_for_cik(self, cik: str) -> list[dict] | None:
+        try:
+            return _red_flags(await _get_json(f"{SUBMISSIONS_BASE}/CIK{cik}.json"), cik)
+        except Exception:
+            return None
+
+    async def _filings_from_submissions(self, cik: str, max_results: int) -> tuple[list[dict], list[dict] | None]:
         try:
             data         = await _get_json(f"{SUBMISSIONS_BASE}/CIK{cik}.json")
             company_name = data.get("name", "Unknown")
@@ -117,9 +153,9 @@ class SecEdgarTool:
                 })
                 if len(filings) >= max_results:
                     break
-            return filings
+            return filings, _red_flags(data, cik)
         except Exception:
-            return []
+            return [], None
 
     # -- Strategy 2/3: EFTS full-text search fallback -------------------------
 
@@ -132,12 +168,43 @@ class SecEdgarTool:
                 "forms":     ",".join(HIGH_VALUE_FORMS),
             })
             hits = data.get("hits", {}).get("hits", [])
-            return [_parse_efts_hit(h) for h in hits[:max_results]]
+            ciks = (hits[0].get("_source", {}).get("ciks") or [""]) if hits else [""]
+            return [_parse_efts_hit(h) for h in hits[:max_results]], str(ciks[0] or "").zfill(10) if ciks[0] else ""
         except Exception:
-            return []
+            return [], ""
 
 
 # -- Parsers ------------------------------------------------------------------
+
+def _red_flags(submissions: dict, cik: str, today: date | None = None) -> list[dict]:
+    """Red-flag filings in the filer's recent history, newest first."""
+    recent  = submissions.get("filings", {}).get("recent", {})
+    forms   = recent.get("form", [])
+    n       = len(forms)
+    col     = lambda k: recent.get(k) or [""] * n
+    dates, periods, items = col("filingDate"), col("reportDate"), col("items")
+    accns, docs = col("accessionNumber"), col("primaryDocument")
+    since   = ((today or date.today()) - timedelta(days=FLAG_LOOKBACK_DAYS)).isoformat()
+    flags: list[dict] = []
+    for i, form in enumerate(forms):
+        if (dates[i] or "") < since:
+            continue
+        labels: list[str] = []
+        if form == "8-K":
+            codes = [c.strip() for c in str(items[i] or "").split(",")]
+            labels = [f"8-K Item {c} — {RED_FLAG_8K_ITEMS[c]}" for c in codes if c in RED_FLAG_8K_ITEMS]
+        elif form in RED_FLAG_FORMS:
+            labels = [f"{form} — {RED_FLAG_FORMS[form]}"]
+        for label in labels:
+            acc = str(accns[i] or "").replace("-", "")
+            flags.append({
+                "filed_at": dates[i], "period": periods[i], "label": label,
+                "url": (f"{EDGAR_BASE}/Archives/edgar/data/{int(cik)}/{acc}/{docs[i]}"
+                        if acc and docs[i] else ""),
+            })
+    flags.sort(key=lambda f: f["filed_at"], reverse=True)
+    return flags[:MAX_FLAGS]
+
 
 def _parse_efts_hit(hit: dict) -> dict:
     src         = hit.get("_source", {})
@@ -179,8 +246,27 @@ def _strip_ticker(name: str) -> str:
 
 # -- Formatter ----------------------------------------------------------------
 
-def _format_results(query: str, filings: list[dict]) -> str:
+def _format_results(query: str, filings: list[dict], flags: list[dict] | None = None) -> str:
     lines = [f"SEC EDGAR RESULTS for: '{query}'", "=" * 60]
+
+    # Flags FIRST: the risk and compliance agents read a per-tool digest that is
+    # truncated, and a red flag at the end of this output would be cut off.
+    # (No "[n] FORM —" header or "URL:" line, so the RAG ingester skips it.)
+    if flags is not None:
+        lines.append(f"REGULATORY FLAGS (last {FLAG_LOOKBACK_DAYS // 365} years of EDGAR filings that "
+                     "bear on whether reported figures can be relied on):")
+        if flags:
+            for f in flags:
+                # An 8-K's report date is the EVENT date; for NT and amended
+                # reports it is the fiscal period the filing concerns.
+                kind = "event" if f["label"].startswith("8-K") else "for period ending"
+                period = f" ({kind} {f['period']})" if f.get("period") else ""
+                lines.append(f"  ⚑ {f['filed_at']}  {f['label']}{period}")
+                if f.get("url"):
+                    lines.append(f"      link: {f['url']}")
+        else:
+            lines.append("  none found.")
+        lines.append("")
 
     if not filings:
         lines += [
