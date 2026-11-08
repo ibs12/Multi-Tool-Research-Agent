@@ -87,3 +87,55 @@ def test_search_fetches_flags_via_the_ticker_path(monkeypatch):
     monkeypatch.setattr(se, "date", type("D", (), {"today": staticmethod(lambda: TODAY)}))
     out = asyncio.run(se.run_sec_search("Archer-Daniels-Midland (ADM)"))
     assert "8-K Item 4.02" in out and "[1] 10-Q" in out
+
+
+# ── what a flag covers, read from the filing (wording from the real 8-Ks) ─────
+
+def test_non_reliance_scope_tells_interim_from_annual():
+    corpay = ("Item 4.02 Non-Reliance on Previously Issued Financial Statements On February 26, 2024, the Audit "
+              "Committee determined that the Company's previously issued unaudited condensed consolidated financial "
+              "statements included in the quarterly report on Form 10-Q for the fiscal quarter ended March 31, 2023 "
+              "should no longer be relied upon. The Annual Report on Form 10-K will include corrected figures.")
+    symbotic = ("Item 4.02 Non-Reliance ... determined that it will be required to restate its previously issued "
+                "unaudited interim financial statements for the first, second and third quarters of fiscal year 2024 "
+                "... should therefore no longer be relied upon.")
+    mpwr = ("Item 4.02 Non-Reliance ... determined that the Company's previously issued audited consolidated financial "
+            "statements included in its annual report on Form 10-K for the fiscal year ended December 31, 2024 ... "
+            "should no longer be relied upon")
+    interim = "withdraws interim (quarterly) statements only — not the annual report"
+    assert se.scope_of_non_reliance(corpay) == interim         # the later 10-K mention is past "relied upon"
+    assert se.scope_of_non_reliance(symbotic) == interim       # "quarters of fiscal year 2024" is not annual
+    assert se.scope_of_non_reliance(mpwr) == "withdraws annual (audited) financial statements"
+
+
+def test_auditor_change_scope_separates_resignation_from_rotation():
+    sitime = ("Item 4.01. Changes in Registrant's Certifying Accountant. The Audit Committee has conducted a competitive "
+              "selection process ... there were no disagreements with BDO on any matter of accounting principles")
+    smci = ("Item 4.01 Changes to Registrant's Certifying Accountant On October 24, 2024, Ernst & Young LLP sent the "
+            "members of the Audit Committee a letter of resignation as the Company's registered public accounting firm")
+    assert se.scope_of_auditor_change(sitime) == "auditor replaced by the company (routine rotation); no disagreements reported"
+    assert se.scope_of_auditor_change(smci) == "auditor RESIGNED; disagreements not stated"
+
+
+def test_the_new_auditor_consultation_boilerplate_is_not_a_disagreement():
+    """Axon / Super Micro: 'disagreement' appears only in the standard clause about
+    not consulting the new auditor — the line must not claim disagreements."""
+    axon = ("Item 4.01 ... following the conclusion of a process managed by the Audit Committee ... neither the Company "
+            "nor anyone on its behalf consulted PwC regarding (ii) any matter that was the subject of a "
+            "“disagreement,” within the meaning of Item 304(a)(1)(iv) of Regulation S-K")
+    assert se.scope_of_auditor_change(axon).endswith("; disagreements not stated")
+
+
+def test_quoted_and_numbered_no_disagreements_still_count():
+    mastec = ("ITEM 4.01 Changes in Registrant's Certifying Accountant. (a) Dismissal of Previous Independent Registered "
+              "Public Accounting Firm ... there were (i) no disagreements within the meaning of Item 304(a)(1)(iv)")
+    assert se.scope_of_auditor_change(mastec).endswith("no disagreements reported")
+    assert se.scope_of_auditor_change("Item 4.01 ... there were no “disagreements” (as defined)").endswith("no disagreements reported")
+
+
+def test_scope_is_printed_under_its_flag():
+    flags = [{"filed_at": "2024-02-29", "period": "2024-02-26", "url": "",
+              "label": "8-K Item 4.02 — Non-reliance on previously issued financial statements",
+              "scope": "withdraws interim (quarterly) statements only — not the annual report"}]
+    out = se._format_results("CPAY", [], flags)
+    assert "      scope: withdraws interim (quarterly) statements only" in out
