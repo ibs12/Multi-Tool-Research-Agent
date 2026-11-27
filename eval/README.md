@@ -104,10 +104,11 @@ red flag", "core figures unverifiable", "sources conflict irreconcilably"):
 - **escalate** — the requested year's *annual* statements carry the flag:
   (a) an 8-K Item 4.02 non-reliance notice on them, or (b) the annual report
   filed materially late because of a review of the company's own accounting or
-  controls.
+  controls, or (c) the auditor resigned, or its auditor-change filing reports
+  disagreements.
 - **clear** — the flag is adjacent, not on them: non-reliance limited to interim
   quarters, a late filing by days or for procedural/strategic reasons, an
-  amendment that changed no figures.
+  amendment that changed no figures, a routine auditor rotation.
 
 They are *boundary* cases because the figures eventually filed look normal and
 audited in every one; the flag (or its absence) lives in a different filing. A

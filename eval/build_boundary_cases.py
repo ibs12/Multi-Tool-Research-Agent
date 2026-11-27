@@ -18,11 +18,16 @@ irreconcilably" or "a regulatory red flag":
   ESCALATE  the requested fiscal year's ANNUAL statements carry a red flag:
             (a) a formal 8-K Item 4.02 non-reliance notice on them, or
             (b) the annual report was filed materially late (weeks, not days)
-                because of a review of the company's own accounting or controls.
+                because of a review of the company's own accounting or controls,
+            (c) the auditor RESIGNED, or the auditor-change filing (8-K Item
+                4.01) reports disagreements, around the requested year.
   CLEAR     the flag is adjacent, not on the requested annual statements:
             non-reliance limited to interim quarters the annual report
             superseded; a late filing by days or for procedural or strategic
-            reasons; an amendment that changed no figures.
+            reasons; an amendment that changed no figures; a ROUTINE auditor
+            change (the company replaced it after a competitive selection, no
+            disagreements). Rule (c) was added 2026-11-08 after the first
+            post-#64 run (docs/eval/2026-11-08-boundary-after-sec-fix.md).
 
 Why these are BOUNDARY cases: in every one the figures that were eventually
 filed look normal, audited and internally consistent. The red flag — or its
@@ -81,11 +86,12 @@ CURATED = [
                    "figures look entirely normal on their own. Rule (a)."),
     dict(cik=1375365, company="Super Micro Computer, Inc.", fy=2024, verdict="escalate",
          category="should_escalate", gap_type="regulatory_flag", rule="b",
-         evidence=[("NT 10-K", "2024-08-30"), ("10-K", "2025-02-25")],
+         evidence=[("NT 10-K", "2024-08-30"), ("8-K", "2024-10-30"), ("10-K", "2025-02-25")],
          rationale="The FY2024 (June year-end) 10-K was ~6 months late while a committee of "
                    "the board reviewed certain of the company's internal controls and other "
-                   "matters. It was eventually filed and audited — which is why a figures-only "
-                   "review clears it. Rule (b)."),
+                   "matters, and in October 2024 its auditor (EY) resigned (8-K Item 4.01). The "
+                   "10-K was eventually filed and audited — which is why a figures-only review "
+                   "clears it. Rules (b) and (c)."),
     dict(cik=769397, company="Autodesk, Inc.", fy=2024, verdict="escalate",
          category="should_escalate", gap_type="regulatory_flag", rule="b",
          evidence=[("NT 10-K", "2024-04-01"), ("10-K", "2024-06-10")],
@@ -111,15 +117,19 @@ CURATED = [
                    "requested year — but the annual statements themselves were never withdrawn."),
     dict(cik=1451809, company="SiTime Corp.", fy=2023, verdict="clear",
          category="missing_conflicting", gap_type="none", rule="adjacent-interim",
-         evidence=[("8-K", "2024-01-25"), ("10-K", "2024-02-26")],
+         evidence=[("8-K", "2024-01-25"), ("10-K", "2024-02-26"), ("8-K", "2024-06-12")],
          rationale="The 4.02 concerned only cash-flow classification of interest in Q1–Q3 2023 "
                    "interim statements; the notice itself states income, balance sheet and cash "
-                   "position are unaffected. The FY2023 10-K was filed on time."),
+                   "position are unaffected. The FY2023 10-K was filed on time. The June 2024 "
+                   "auditor change (8-K 4.01) was routine — a competitive selection, no "
+                   "disagreements — so rule (c) does not apply."),
     dict(cik=15615, company="MasTec, Inc.", fy=2023, verdict="clear",
          category="missing_conflicting", gap_type="none", rule="late-by-days",
-         evidence=[("NT 10-K", "2024-03-01"), ("10-K", "2024-03-01")],
-         rationale="A late-filing notice, but the FY2023 10-K was filed the same day. An NT "
-                   "10-K on its own is not a red flag."),
+         evidence=[("NT 10-K", "2024-03-01"), ("10-K", "2024-03-01"), ("8-K", "2024-03-08")],
+         rationale="A late-filing notice, but the FY2023 10-K was filed the same day. The March "
+                   "2024 auditor change (8-K 4.01) was routine — dismissal after a competitive "
+                   "selection, no disagreements; its one reportable event is a material weakness "
+                   "for FY2022, not the requested FY2023 — so rule (c) does not apply."),
     dict(cik=1051470, company="Crown Castle Inc.", fy=2024, verdict="clear",
          category="missing_conflicting", gap_type="none", rule="late-strategic",
          evidence=[("NT 10-K", "2025-02-25"), ("10-K", "2025-03-14")],

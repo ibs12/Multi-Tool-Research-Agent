@@ -13,6 +13,8 @@ Rewritten to use httpx.AsyncClient so all HTTP calls are non-blocking.
 
 from __future__ import annotations
 
+import asyncio
+import html as _html
 import re
 from datetime import date, timedelta
 
@@ -60,6 +62,77 @@ SEC_EDGAR_ERROR = "[SEC EDGAR Error]"
 
 # -- Async HTTP helper --------------------------------------------------------
 
+async def _get_text(url: str) -> str:
+    """GET a filing document as plain text (tags stripped). Raises on errors."""
+    async with httpx.AsyncClient(headers={**HEADERS, "Accept": "text/html"},
+                                 timeout=REQUEST_TIMEOUT) as client:
+        response = await client.get(url)
+        response.raise_for_status()
+        text = _html.unescape(re.sub(r"<[^>]+>", " ", response.text))
+        return re.sub(r"\s+", " ", text)
+
+
+# ── What a flag actually covers ───────────────────────────────────────────────
+# A bare "8-K Item 4.02" made compliance escalate cases whose notice withdrew
+# only interim quarters the annual report later superseded (Corpay, Symbotic);
+# a bare "4.01" made it escalate routine auditor rotations (SiTime, MasTec).
+# The filing says which — so the flag carries one line read from it.
+
+def scope_of_non_reliance(text: str) -> str | None:
+    """Which reports an Item 4.02 notice withdraws: interim only, or the annual."""
+    i = text.lower().find("item 4.02")
+    if i < 0:
+        return None
+    seg = text[i:i + 1500]
+    end = seg.lower().find("relied upon")
+    seg = seg[:end] if end > 0 else seg[:700]
+    low = seg.lower()
+    # "fiscal year ended …" names an annual period; "quarters of fiscal year
+    # 2024" (Symbotic) does not, so a bare "fiscal year 2024" is not a signal.
+    annual = re.search(r"form 10-k|annual report|fiscal years? ended|audited consolidated", low)
+    interim = re.search(r"form 10-q|quarter|interim|unaudited", low)
+    if annual:
+        return "withdraws annual (audited) financial statements"
+    if interim:
+        return "withdraws interim (quarterly) statements only — not the annual report"
+    return None
+
+
+def scope_of_auditor_change(text: str) -> str | None:
+    """Item 4.01: did the auditor resign or was it replaced, and any disagreements?"""
+    i = text.lower().find("item 4.01")
+    if i < 0:
+        return None
+    low = text[i:i + 4000].lower()
+    if re.search(r"resign|declin\w* to stand", low):
+        how = "auditor RESIGNED"
+    elif re.search(r"dismiss|competitive (selection|process|proposal)|request for proposal", low):
+        how = "auditor replaced by the company (routine rotation)"
+    else:
+        how = "new auditor appointed"
+    # Only an explicit statement counts. "Disagreement" also appears in the
+    # standard clause about NOT consulting the new auditor on any matter that was
+    # the subject of a disagreement (Axon, Super Micro) — boilerplate, not a
+    # report — so the line never claims disagreements the text doesn't state.
+    no_dis = r"\bno\s+(?:\(\w+\)\s*)?[\"“”']?disagreements|were not any[\"“”'\s]+disagreements"
+    dis = "no disagreements reported" if re.search(no_dis, low) else "disagreements not stated"
+    return f"{how}; {dis}"
+
+
+async def _add_scope(flags: list[dict]) -> None:
+    """Fill flag["scope"] for 4.02/4.01 flags from the filing text. Never raises."""
+    async def one(flag: dict) -> None:
+        reader = (scope_of_non_reliance if "Item 4.02" in flag["label"] else
+                  scope_of_auditor_change if "Item 4.01" in flag["label"] else None)
+        if not reader or not flag.get("url"):
+            return
+        try:
+            flag["scope"] = reader(await _get_text(flag["url"]))
+        except Exception:
+            pass
+    await asyncio.gather(*(one(f) for f in flags))
+
+
 async def _get_json(url: str, params: dict | None = None) -> dict:
     """GET request returning parsed JSON. Raises on HTTP/network errors."""
     async with httpx.AsyncClient(headers=HEADERS, timeout=REQUEST_TIMEOUT) as client:
@@ -97,6 +170,8 @@ class SecEdgarTool:
         # filing list came from full-text search.
         if flags is None and cik:
             flags = await self._flags_for_cik(cik)
+        if flags:
+            await _add_scope(flags)
 
         return _format_results(company, filings, flags)
 
@@ -262,6 +337,8 @@ def _format_results(query: str, filings: list[dict], flags: list[dict] | None = 
                 kind = "event" if f["label"].startswith("8-K") else "for period ending"
                 period = f" ({kind} {f['period']})" if f.get("period") else ""
                 lines.append(f"  ⚑ {f['filed_at']}  {f['label']}{period}")
+                if f.get("scope"):
+                    lines.append(f"      scope: {f['scope']}")
                 if f.get("url"):
                     lines.append(f"      link: {f['url']}")
         else:
