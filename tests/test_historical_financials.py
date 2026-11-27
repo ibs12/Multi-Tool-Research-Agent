@@ -41,7 +41,7 @@ def test_annual_lines_carry_diluted_eps(stub):
           "Diluted EPS": [6.11, 6.13, 6.08, 7.46]})
     out = ce.get_historical_financials("AAPL")
     assert "FY2023: Revenue $383.30B" in out
-    assert "Diluted EPS $6.13" in out and "Diluted EPS $7.46" in out
+    assert "Diluted EPS (GAAP, as reported) $6.13" in out and "Diluted EPS (GAAP, as reported) $7.46" in out
 
 
 def test_a_loss_per_share_keeps_its_sign(stub):
@@ -49,11 +49,30 @@ def test_a_loss_per_share_keeps_its_sign(stub):
           "Net Income": [-5.05e9, -2.22e9, -11.8e9, 2.0e9],
           "Diluted EPS": [-8.30, -3.67, -18.36, 2.48]})
     out = ce.get_historical_financials("BA")
-    assert "Diluted EPS $-3.67" in out
+    assert "Diluted EPS (GAAP, as reported) $-3.67" in out
 
 
 def test_falls_back_to_basic_eps_then_says_not_available(stub):
     stub({"Total Revenue": [1e9] * 4, "Net Income": [1e8] * 4, "Basic EPS": [1.0, 1.1, 1.2, 1.3]})
-    assert "Diluted EPS $1.20" in ce.get_historical_financials("X")
+    assert "Diluted EPS (GAAP, as reported) $1.20" in ce.get_historical_financials("X")
     stub({"Total Revenue": [1e9] * 4, "Net Income": [1e8] * 4})
-    assert "Diluted EPS Not available" in ce.get_historical_financials("X")
+    assert "Diluted EPS (GAAP, as reported) Not available" in ce.get_historical_financials("X")
+
+
+def test_figures_under_a_billion_are_shown_in_millions():
+    """Rocket FY2024 net income, $29.0M, came out as "$0.03B" — too coarse to verify."""
+    assert ce._safe_rev(29_000_000) == "$29.0M"
+    assert ce._safe_rev(-13_500_000) == "$-13.5M"
+    assert ce._safe_rev(383_285_000_000) == "$383.29B"
+    assert ce._safe_rev(None) == "Not available"
+
+
+def test_millions_round_trip_through_the_brief_parser():
+    from agent.brief_parser import _to_number
+    assert _to_number(ce._safe_rev(29_000_000)) == 29_000_000
+    assert _to_number(ce._safe_rev(-13_500_000)) == -13_500_000
+
+
+def test_reported_eps_is_labelled_gaap(stub):
+    stub({"Total Revenue": [1e9] * 4, "Net Income": [1e8] * 4, "Diluted EPS": [1.0, 1.1, 1.2, 1.3]})
+    assert "Diluted EPS (GAAP, as reported) $1.20" in ce.get_historical_financials("X")

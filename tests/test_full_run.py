@@ -150,3 +150,22 @@ def test_boundary_cases_run_live_and_can_be_selected_alone():
     # boundary should-escalate cases are real filers, so unlike the synthetic
     # dataset escalations they DO run live
     assert any(c["category"] == "should_escalate" for c in boundary)
+
+
+def test_a_case_result_keeps_what_each_tool_returned(monkeypatch):
+    """SiTime escalated over "wrong-company data" and nothing recorded which tool
+    supplied it. Each result now carries the head of every tool's output."""
+    import asyncio
+    import agent.graph
+
+    class _Graph:
+        async def ainvoke(self, state):
+            return {"termination_reason": "escalated", "handoff": {"escalation": {"reason": "x"}},
+                    "tool_results": [{"tool_name": "wikipedia", "success": True, "output": "Sitime (band)…" + "z" * 5000},
+                                     {"tool_name": "sec_edgar", "success": False, "output": "[SEC EDGAR Error] boom"}]}
+    monkeypatch.setattr(agent.graph, "graph", _Graph())
+    case = run_full.load_live_eval_set()[0]
+    result = asyncio.run(run_full._run_case(case, "multi"))
+    assert result["evidence"]["wikipedia"].startswith("Sitime (band)")
+    assert len(result["evidence"]["wikipedia"]) == 1500
+    assert result["failed_tools"] == ["sec_edgar"]

@@ -46,7 +46,12 @@ def _safe_rev(val) -> str:
     """Format a revenue value in billions; return 'Not available' for None/NaN."""
     if val is None or (isinstance(val, float) and math.isnan(val)):
         return "Not available"
-    return f"${float(val) / 1e9:.2f}B"
+    val = float(val)
+    # Under $1B, billions to two decimals is too coarse to check: $29.0M came
+    # out as "$0.03B" and the brief repeated it (2026-11-08 boundary eval).
+    if abs(val) < 1e9:
+        return f"${val / 1e6:.1f}M"
+    return f"${val / 1e9:.2f}B"
 
 
 def _safe_score(val) -> str:
@@ -143,7 +148,11 @@ def run_consensus_estimates(ticker: str) -> str:
         ]
 
         # ── EPS Estimates ─────────────────────────────────────────────────────
-        lines.append("EPS ESTIMATES")
+        # Label the definition: these are adjusted (non-GAAP) figures, while the
+        # historical tool reports GAAP diluted EPS. Unlabelled, compliance read
+        # the gap between the two as conflicting sources and escalated on it.
+        lines.append("EPS ESTIMATES (analyst consensus, typically ADJUSTED / non-GAAP — a different "
+                     "definition from reported GAAP diluted EPS; a gap between the two is not a conflict)")
         try:
             ee = t.earnings_estimate
             if ee is not None and not ee.empty:
@@ -305,7 +314,7 @@ def get_historical_financials(ticker: str) -> str:
                 eps     = _safe_eps(eps_v)
                 lines.append(
                     f"  {fy}: Revenue {rev} | Net Income {ni} | Gross Margin {gm} "
-                    f"| Diluted EPS {eps} {cite}"
+                    f"| Diluted EPS (GAAP, as reported) {eps} {cite}"
                 )
         else:
             lines.append("  Not available — no annual income statement data returned.")
