@@ -53,3 +53,31 @@ def test_a_swing_from_loss_to_profit_is_a_material_change():
     changes = compute_delta(before, after)["figure_changes"]
     assert [(c["period"], c["field"]) for c in changes] == [("FY2023", "net_income")]
     assert changes[0]["before"] < 0 < changes[0]["after"]
+
+
+# ── a cell that names its own period is not the column's figure ───────────────
+
+GS = """## Financial Snapshot
+| Metric | FY2025 | Q2 FY2026 | FY2026E |
+|---|---|---|---|
+| Revenue | $58.28B ¹ | {q2} | $73.34B (Low $69.51B – High $74.94B) ³ |
+| Net Income | $14.28B ¹ | $3.7B ² | — |
+"""
+
+
+def test_a_half_year_cell_is_not_stored_as_the_quarter():
+    figs = extract_all_periods(GS.format(q2="H1: $~49B ²"))
+    assert "revenue" not in figs["Q2 FY2026"]              # unknown, not $49B
+    assert figs["Q2 FY2026"]["net_income"] == pytest.approx(3.7e9)
+    assert figs["FY2025"]["revenue"] == pytest.approx(58.28e9)
+
+
+@pytest.mark.parametrize("cell", ["H1: $49B", "9M: $101.5B ²", "YTD $30.1B", "Six months: $49B", "First-half $49B"])
+def test_other_period_prefixes_are_skipped(cell):
+    assert "revenue" not in extract_all_periods(GS.format(q2=cell)).get("Q2 FY2026", {})
+
+
+def test_goldman_half_year_cell_no_longer_reads_as_a_58_percent_fall():
+    before = {"figures": extract_all_periods(GS.format(q2="H1: $~49B ²"))}
+    after = {"figures": extract_all_periods(GS.format(q2="$20.3B²"))}
+    assert compute_delta(before, after)["figure_changes"] == []

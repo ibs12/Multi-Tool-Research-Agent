@@ -74,3 +74,15 @@ def pct_change(before, after) -> float | None:
     if b == 0:
         return None
     return round((a - b) / abs(b) * 100, 1)
+
+
+def is_material_flag_change(before: int, after: int) -> bool:
+    """True when the risk analyst's red-flag COUNT moved enough to mean something.
+
+    The count is how many bullets a model chose to write, so it wobbles by one
+    between runs of an unchanged company (Meta 10→9, Microsoft 7→6, UnitedHealth
+    9→10 in Nov 2026, each marking the company "changed"). Surface it only when
+    it moves by at least two AND at least a quarter of the earlier count.
+    """
+    diff = abs(after - before)
+    return diff >= 2 and diff >= 0.25 * before

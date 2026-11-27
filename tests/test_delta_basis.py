@@ -64,3 +64,21 @@ def test_legacy_runs_get_the_basis_that_was_live_when_they_were_made():
 def test_new_runs_are_stamped_with_their_basis():
     rec = build_run_record("Analyse AMD", "multi", {"company_target": "AMD"}, "", 1.0)
     assert rec["figures_basis"] == {"eps_reported": EPS_REPORTED_BASIS}
+
+
+# ── the red-flag count is a model's bullet count: ±1 is not news ──────────────
+
+def _flags(n):
+    return {"created_at": AFTER_FIX, "figures": {}, "risk_assessment": {"red_flags": ["x"] * n}}
+
+
+def test_a_one_flag_wobble_does_not_mark_a_company_changed():
+    for b, a in [(10, 9), (7, 6), (9, 10), (8, 7)]:        # Meta, Microsoft, UnitedHealth, Goldman
+        d = compute_delta(_flags(b), _flags(a))
+        assert d["red_flag_change"] is None and d["is_empty"], (b, a)
+
+
+def test_a_real_shift_in_risk_flags_still_surfaces():
+    assert compute_delta(_flags(6), _flags(8))["red_flag_change"] == {"before": 6, "after": 8}
+    assert compute_delta(_flags(3), _flags(0))["red_flag_change"] == {"before": 3, "after": 0}
+    assert compute_delta(_flags(12), _flags(10))["red_flag_change"] is None     # 2 of 12 is under a quarter
