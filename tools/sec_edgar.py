@@ -119,9 +119,71 @@ def scope_of_auditor_change(text: str) -> str | None:
     return f"{how}; {dis}"
 
 
+_LATE_REASON_WORDS = re.compile(
+    r"investigat|audit committee|internal control|material weakness|restat|error|review|"
+    r"strategic|transition|additional time|acquisition|cyber", re.I)
+
+
+def reason_for_late_filing(text: str) -> str | None:
+    """The company's own stated reason, quoted from Part III of the NT notice.
+
+    Quoted, not classified: whether a delay is procedural or an accounting
+    problem is the judgement compliance has to make, so it gets the sentence.
+    """
+    # The NARRATIVE heading, not the earlier Part II checkbox text that merely
+    # refers to "Part III of this form".
+    m = re.search(r"PART\s+III\s*[\u2014\u2013-]+\s*NARRATIVE", text, re.I)
+    if not m:
+        return None
+    i = m.end()
+    seg = text[i:i + 3500]
+    j = seg.upper().find("PART IV")
+    seg = seg[:j] if j > 0 else seg
+    k = seg.lower().find("prescribed time period.")       # end of the form's instruction
+    if 0 <= k < 400:
+        seg = seg[k + len("prescribed time period."):]
+    seg = re.sub(r"^\s*\(Attach extra sheets if needed\.?\)\s*", "", seg.strip(), flags=re.I)
+    sentences = [x.strip() for x in re.split(r"(?<=[.!?])\s+(?=[A-Z])", seg) if len(x.strip()) > 25]
+    if not sentences:
+        return None
+    pick = next((x for x in sentences if _LATE_REASON_WORDS.search(x)), sentences[0])
+    if len(pick) <= 300:
+        return pick
+    # Keep the part of a long sentence that carries the reason.
+    k = _LATE_REASON_WORDS.search(pick)
+    start = max(0, min(k.start() - 120, len(pick) - 297)) if k else 0
+    return ("…" if start else "") + pick[start:start + 297].strip() + "…"
+
+
+def _late_scope(flag: dict, reason: str | None) -> str | None:
+    late = flag.get("late_by")
+    parts = []
+    if isinstance(late, int):
+        parts.append("report filed the same day as this notice" if late == 0
+                     else f"report filed {late} days after this notice")
+    elif late:
+        parts.append("report not yet filed")
+    if reason:
+        parts.append(f"stated reason: \"{reason}\"")
+    return "; ".join(parts) or None
+
+
 async def _add_scope(flags: list[dict]) -> None:
-    """Fill flag["scope"] for 4.02/4.01 flags from the filing text. Never raises."""
+    """Fill flag["scope"] from the filing text: what a 4.02 withdraws, how an
+    auditor left, how late and why a late report was. Never raises."""
     async def one(flag: dict) -> None:
+        if flag["label"].startswith("NT "):
+            reason = None
+            # The quoted reason only for a late ANNUAL report: agents read a
+            # digest capped at 2,500 characters per tool, and quoting every late
+            # 10-Q pushed Super Micro's auditor resignation past the cap.
+            if flag["label"].startswith("NT 10-K") and flag.get("url"):
+                try:
+                    reason = reason_for_late_filing(await _get_text(flag["url"]))
+                except Exception:
+                    pass
+            flag["scope"] = _late_scope(flag, reason)
+            return
         reader = (scope_of_non_reliance if "Item 4.02" in flag["label"] else
                   scope_of_auditor_change if "Item 4.01" in flag["label"] else None)
         if not reader or not flag.get("url"):
@@ -270,9 +332,22 @@ def _red_flags(submissions: dict, cik: str, today: date | None = None) -> list[d
             labels = [f"8-K Item {c} — {RED_FLAG_8K_ITEMS[c]}" for c in codes if c in RED_FLAG_8K_ITEMS]
         elif form in RED_FLAG_FORMS:
             labels = [f"{form} — {RED_FLAG_FORMS[form]}"]
+        late_by = None
+        if form.startswith("NT "):
+            # How late was the report itself? Prefer the report for the same
+            # period; some notices carry their own filing date as the period
+            # (Super Micro), so fall back to the first report filed on or after
+            # the notice. Same-day filings can sit on either side in EDGAR's list.
+            base = form[3:]
+            after = [j for j in range(n) if forms[j] == base and (dates[j] or "") >= dates[i]]
+            same = [j for j in after if periods[j] and periods[j] == periods[i]]
+            filed = min((dates[j] for j in (same or after)), default=None)
+            late_by = ((date.fromisoformat(filed) - date.fromisoformat(dates[i])).days
+                       if filed else "not yet filed")
         for label in labels:
             acc = str(accns[i] or "").replace("-", "")
             flags.append({
+                "late_by": late_by,
                 "filed_at": dates[i], "period": periods[i], "label": label,
                 "url": (f"{EDGAR_BASE}/Archives/edgar/data/{int(cik)}/{acc}/{docs[i]}"
                         if acc and docs[i] else ""),

@@ -139,3 +139,45 @@ def test_scope_is_printed_under_its_flag():
               "scope": "withdraws interim (quarterly) statements only — not the annual report"}]
     out = se._format_results("CPAY", [], flags)
     assert "      scope: withdraws interim (quarterly) statements only" in out
+
+
+# ── late filings: how late, and the company's stated reason ───────────────────
+
+def test_lateness_is_measured_to_the_report_for_the_same_period():
+    rows = _subs([
+        ("10-Q", "2026-08-07", "2026-06-30", "", "a1", "q2.htm"),
+        ("NT 10-Q", "2026-05-12", "2026-03-31", "", "a2", "nt.htm"),
+        ("10-Q", "2026-05-12", "2026-03-31", "", "a3", "q1.htm"),      # same day, listed AFTER the notice
+        ("10-K", "2024-06-10", "2024-01-31", "", "a4", "k.htm"),
+        ("NT 10-K", "2024-04-01", "2024-01-31", "", "a5", "ntk.htm"),
+    ])
+    flags = {f["label"][:7]: f for f in se._red_flags(rows, "1", today=TODAY)}
+    assert flags["NT 10-Q"]["late_by"] == 0          # Rocket: not 87 days to the NEXT quarter's report
+    assert flags["NT 10-K"]["late_by"] == 70         # Autodesk
+
+
+def test_a_notice_with_no_report_yet_says_so():
+    flags = se._red_flags(_subs([("NT 10-K", "2026-10-30", "2026-07-31", "", "a", "nt.htm")]), "1", today=TODAY)
+    assert se._late_scope(flags[0], None) == "report not yet filed"
+
+
+AUTODESK_NT = ("PART II RULES 12b-25(b) AND (c) ... (a) The reasons described in reasonable detail in Part III of this "
+               "form could not be eliminated without unreasonable effort or expense; ... PART III — NARRATIVE State below "
+               "in reasonable detail why Forms 10-K, 20-F ... could not be filed within the prescribed time period. "
+               "(Attach extra Sheets if Needed) Autodesk, Inc. is unable to file its Annual Report on Form 10-K for the year "
+               "ended January 31, 2024 within the prescribed time period, without unreasonable effort or expense. After the "
+               "Company's earnings release, information was brought to the attention of management that caused the Committee "
+               "to commence an internal investigation regarding the Company's free cash flow practices. PART IV — OTHER "
+               "INFORMATION Name and telephone number of person to contact")
+
+
+def test_the_stated_reason_is_quoted_from_the_narrative_not_the_checkbox_text():
+    reason = se.reason_for_late_filing(AUTODESK_NT)
+    assert "internal investigation" in reason
+    assert "could not be eliminated" not in reason and "telephone" not in reason
+
+
+def test_late_scope_line():
+    assert se._late_scope({"late_by": 70}, "an internal investigation") == \
+        'report filed 70 days after this notice; stated reason: "an internal investigation"'
+    assert se._late_scope({"late_by": 0}, None) == "report filed the same day as this notice"
