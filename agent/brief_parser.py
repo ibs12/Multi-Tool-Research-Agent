@@ -47,6 +47,14 @@ _EMPTY_CELL = {"", "—", "-", "–", "n/a", "N/A"}
 _YEARISH = re.compile(r"(FY)?\s*20\d{2}", re.I)
 
 
+# A cell that names its own period is not the column's figure. Synthesis may
+# write "H1: $49B" in a quarter column when a filing reports a half-year basis;
+# stored as the quarter's value it made Goldman's Q2 revenue "fall" 58.6% on the
+# next run ($49B half-year vs $20.3B quarter). Unknown, never a change.
+_OTHER_PERIOD = re.compile(
+    r"^\W*(H[12]|[69]M|YTD|TTM|LTM|(first|second)[- ]half|(six|nine|twelve)[- ]months?)\b", re.I)
+
+
 def _to_number(text: str, field: str = ""):
     """First number in a cell, normalised to absolute units ($391.0B → 3.91e11),
     negative when the cell writes it as a loss (see `_NUM`)."""
@@ -119,7 +127,7 @@ def extract_all_periods(brief: str) -> dict[str, dict[str, float]]:
             continue
         for i in range(1, min(len(cells), len(header))):
             cell = cells[i]
-            if cell in _EMPTY_CELL:
+            if cell in _EMPTY_CELL or _OTHER_PERIOD.match(cell):
                 continue
             period = header[i]
             if not _YEARISH.search(period):

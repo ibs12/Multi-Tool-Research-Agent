@@ -17,7 +17,7 @@ Three rules that keep the output trustworthy:
 
 from __future__ import annotations
 
-from agent.materiality import is_material_change, pct_change
+from agent.materiality import is_material_change, is_material_flag_change, pct_change
 
 
 def _figures(run: dict) -> dict:
@@ -106,7 +106,7 @@ def compute_delta(before: dict, after: dict) -> dict:
 
     flag_change = None
     fb, fa = len(_red_flags(before)), len(_red_flags(after))
-    if before and fb != fa:
+    if before and is_material_flag_change(fb, fa):
         flag_change = {"before": fb, "after": fa}
 
     return {
