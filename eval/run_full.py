@@ -121,6 +121,11 @@ async def _run_case(case: dict, arm: str) -> dict:
         "failed_tools": sorted({r.get("tool_name") for r in final.get("tool_results") or []
                                 if not r.get("success")} - {None}),
         "compliance": (handoff.get("compliance_verdict") or {}).get("verdict"),
+        # What each tool actually returned (head only). Without it a run that
+        # went wrong upstream — SiTime's "wrong-company data" escalation — can't
+        # be traced to the tool that caused it.
+        "evidence": {r.get("tool_name", "?"): str(r.get("output", ""))[:1500]
+                     for r in final.get("tool_results") or []},
     }
     if final.get("termination_reason") == "escalated":
         pkg = handoff.get("escalation") or {}
